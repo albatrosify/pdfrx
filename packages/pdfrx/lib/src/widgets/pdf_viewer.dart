@@ -296,6 +296,10 @@ class _PdfViewerState extends State<PdfViewer>
   Timer? _interactionEndedTimer;
   bool _isInteractionGoingOn = false;
 
+  // CREWLINE PATCH: cache of the last-built per-line text-semantics widgets.
+  // See the guard at the _buildPageSemanticsWidgets call site in build() below.
+  List<Widget> _cachedTextSemanticsWidgets = const [];
+
   BuildContext? _contextForFocusNode;
 
   /// last pointer location in viewer local coordinates
@@ -780,7 +784,21 @@ class _PdfViewerState extends State<PdfViewer>
                             ),
                           ),
                         ),
-                        if (_initialized && shouldBuildTextSemantics) ..._buildPageSemanticsWidgets(context),
+                        // CREWLINE PATCH: this rebuilds one Positioned+Semantics+Focus widget
+                        // per text line per visible page, unconditionally, on every rebuild --
+                        // which fires on every single frame during pan/zoom (via _updateStream).
+                        // Profiling showed this costs ~25ms/frame on a content-dense page when
+                        // any accessibility service is active (semantics is otherwise skipped
+                        // entirely), blowing well past a 120Hz frame budget on its own. Reuse
+                        // the elsewhere-established _isInteractionGoingOn gesture flag (already
+                        // used to skip other expensive per-frame work, e.g. around line 2742) to
+                        // freeze this tree during an active gesture and only recompute once it
+                        // settles -- semantics geometry a few hundred ms stale mid-gesture is
+                        // imperceptible to a screen reader; rebuilding it 120x/sec is not free.
+                        if (_initialized && shouldBuildTextSemantics)
+                          ...(_isInteractionGoingOn
+                              ? _cachedTextSemanticsWidgets
+                              : (_cachedTextSemanticsWidgets = _buildPageSemanticsWidgets(context))),
                         if (_initialized && _canvasLinkPainter.isLaidUnderPageOverlays)
                           ExcludeSemantics(child: _canvasLinkPainter.linkHandlingOverlay(viewSize)),
                         if (_initialized) ..._buildPageOverlayWidgets(context),
