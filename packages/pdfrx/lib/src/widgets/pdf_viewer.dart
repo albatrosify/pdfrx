@@ -19,6 +19,7 @@ import '../pdfrx_flutter.dart';
 import '../utils/edge_insets_extensions.dart';
 import '../utils/platform.dart';
 import 'interactive_viewer.dart' as iv;
+import 'internals/partial_rendering.dart';
 import 'internals/pdf_error_widget.dart';
 import 'internals/pdf_viewer_key_handler.dart';
 import 'internals/widget_size_sniffer.dart';
@@ -157,6 +158,8 @@ class PdfViewer extends StatefulWidget {
   /// - [passwordProvider] is used to provide password for encrypted PDF. See [PdfPasswordProvider] for more info.
   /// - [firstAttemptByEmptyPassword] is used to determine whether the first attempt to open the PDF is by empty password
   /// or not. For more info, see [PdfPasswordProvider].
+  /// - [maxSizeToCacheOnMemory] is the maximum PDF size to load directly into native memory. The default is 1MB.
+  /// Other backends ignore this option.
   /// - [controller] is the controller to control the viewer.
   /// - [fontManager] is the font manager to handle missing fonts.
   /// - [params] is the parameters to customize the viewer.
@@ -167,6 +170,7 @@ class PdfViewer extends StatefulWidget {
     PdfPasswordProvider? passwordProvider,
     bool firstAttemptByEmptyPassword = true,
     bool useProgressiveLoading = true,
+    int? maxSizeToCacheOnMemory,
     super.key,
     this.controller,
     this.fontManager,
@@ -178,6 +182,7 @@ class PdfViewer extends StatefulWidget {
          passwordProvider: passwordProvider,
          firstAttemptByEmptyPassword: firstAttemptByEmptyPassword,
          useProgressiveLoading: useProgressiveLoading,
+         maxSizeToCacheOnMemory: maxSizeToCacheOnMemory,
        );
 
   /// Create [PdfViewer] from a custom source.
@@ -250,6 +255,12 @@ class _PdfViewerState extends State<PdfViewer>
   int? _initialPageNumber;
   bool _initialized = false;
   bool _documentLoadFinishedNotified = false;
+
+  /// Pending wait of [_notifyDocumentLoadFinished] for the initial page's preview image.
+  ///
+  /// Completed by [_completeInitialPageImageWaiterIfReady] once the image is in [_imageCache], or by
+  /// [_onDocumentChanged]/[dispose] so the waiting future can observe that it was abandoned.
+  Completer<void>? _initialPageImageWaiter;
   bool _usingScrollPercentageMode = false;
 
   StreamSubscription<PdfDocumentEvent>? _documentSubscription;
@@ -453,6 +464,8 @@ class _PdfViewerState extends State<PdfViewer>
     _measurementFailures.clear();
     _pageNumber = null;
     _initialPageNumber = null;
+    // Wake any load-finished wait for the previous document; it sees _document change and bails out.
+    _completeInitialPageImageWaiter();
     _documentLoadFinishedNotified = false;
     _gotoTargetPageNumber = null;
     _initialized = false;
@@ -540,15 +553,21 @@ class _PdfViewerState extends State<PdfViewer>
     }
 
     final stopwatch = Stopwatch()..start();
+    // Measure outward from the initial page so its neighbours are ready first instead of waiting for pages 1..N-1.
+    // _initialPageNumber is only known once the first layout has run, hence it is read here and not earlier.
+    final initialPageNumber = _clampInitialPageNumber(document, _initialPageNumber ?? widget.initialPageNumber);
     await document.loadPagesProgressively(
-      onPageLoadProgress: (pageNumber, totalPageCount, document) {
+      onPageLoadProgress: (loadedPageCount, totalPageCount, document) {
         if (document == _document && mounted) {
-          debugPrint('PdfViewer: Loaded page $pageNumber of $totalPageCount in ${stopwatch.elapsedMilliseconds} ms');
+          debugPrint(
+            'PdfViewer: Loaded $loadedPageCount of $totalPageCount pages in ${stopwatch.elapsedMilliseconds} ms',
+          );
           return true;
         }
         return false;
       },
       data: _document,
+      startPageNumber: initialPageNumber,
     );
     if (!mounted || document != _document) return;
     if (document.pages.every((page) => page.isLoaded)) {
@@ -575,6 +594,7 @@ class _PdfViewerState extends State<PdfViewer>
     _interactionEndedTimer?.cancel();
     _imageCache.cancelAllPendingRenderings();
     _magnifierImageCache.cancelAllPendingRenderings();
+    _completeInitialPageImageWaiter();
     _animController.dispose();
     widget.documentRef.resolveListenable().removeListener(_onDocumentChanged);
     _imageCache.releaseAllImages();
@@ -640,11 +660,13 @@ class _PdfViewerState extends State<PdfViewer>
     final document = _document;
     final documentRef = widget.documentRef;
     if (succeeded && document != null && document.pages.isNotEmpty) {
-      // FIXME: This is a temporary workaround to wait until the initial page is loaded.
-      while (mounted && document == _document) {
-        final initialPageNumber = _clampInitialPageNumber(document, _initialPageNumber ?? widget.initialPageNumber);
-        if (_imageCache.pageImages.containsKey(initialPageNumber)) break;
-        await Future.delayed(const Duration(milliseconds: 100));
+      // Hold the callback until the initial page's preview image is in the cache, so that the document is
+      // visibly rendered when onDocumentLoadFinished fires. The initial page is re-resolved every time an
+      // image lands because calculateInitialPageNumber runs at the first layout, which can be after a replayed
+      // PdfDocumentLoadCompleteEvent gets here. If that page never renders, this keeps waiting indefinitely.
+      if (!_isInitialPageImageCached()) {
+        final waiter = _initialPageImageWaiter ??= Completer<void>();
+        await waiter.future;
       }
       if (!mounted || document != _document) return;
     }
@@ -657,6 +679,27 @@ class _PdfViewerState extends State<PdfViewer>
         widget.params.onDocumentLoadFinished?.call(documentRef, false);
       }
     });
+  }
+
+  /// Whether [_imageCache] holds a preview image for the currently resolved initial page.
+  bool _isInitialPageImageCached() {
+    final document = _document;
+    if (document == null) return false;
+    final initialPageNumber = _clampInitialPageNumber(document, _initialPageNumber ?? widget.initialPageNumber);
+    return _imageCache.pageImages.containsKey(initialPageNumber);
+  }
+
+  /// Wakes [_notifyDocumentLoadFinished] if the initial page's preview image has just landed in [_imageCache].
+  void _completeInitialPageImageWaiterIfReady() {
+    if (_initialPageImageWaiter == null || !_isInitialPageImageCached()) return;
+    _completeInitialPageImageWaiter();
+  }
+
+  /// Releases the pending waiter, if any; the awaiting code re-checks its own exit conditions afterwards.
+  void _completeInitialPageImageWaiter() {
+    final waiter = _initialPageImageWaiter;
+    _initialPageImageWaiter = null;
+    waiter?.complete();
   }
 
   @override
@@ -1719,9 +1762,16 @@ class _PdfViewerState extends State<PdfViewer>
         _requestPagePreviewImageCached(cache, page, previewScaleLimit);
       }
 
-      final pageScale = scale * max(rect.width / page.width, rect.height / page.height);
+      final pageScale = page.width > 0 && page.height > 0
+          ? scale * max(rect.width / page.width, rect.height / page.height)
+          : 0.0;
       if (!enableLowResolutionPagePreview || pageScale > previewScaleLimit) {
-        _requestRealSizePartialImage(cache, page, pageScale, targetRect);
+        // `scale` (not `pageScale`) converts document units to physical pixels.
+        // `pageScale` additionally carries the layout-to-page-size ratio, which
+        // `_createRealSizePartialImage` would apply a second time via
+        // `pageRect.width * scale` -- under-rendering a custom `layoutPages`
+        // that does not lay pages out at their natural size.
+        _requestRealSizePartialImage(cache, page, scale, targetRect);
       }
 
       if ((!enableLowResolutionPagePreview || pageScale > previewScaleLimit) && partial != null) {
@@ -2013,6 +2063,7 @@ class _PdfViewerState extends State<PdfViewer>
     if (!mounted) return;
     final prev = cache.pageImages[page.pageNumber];
     if (prev != null && !prev.isDirty && prev.scale == scale) return;
+    if (!cache.beginPagePreviewRendering(page.pageNumber)) return;
     final cancellationToken = page.createCancellationToken();
 
     cache.addCancellationToken(page.pageNumber, cancellationToken);
@@ -2023,65 +2074,77 @@ class _PdfViewerState extends State<PdfViewer>
     // "slow to draw" apart from "stuck in the queue".
     final sw = Pdfrx.debugLazyLoading ? (Stopwatch()..start()) : null;
     final bytesAtRequest = Pdfrx.debugBytesFetched;
-    await cache.synchronized(() async {
-      final waitedMs = sw?.elapsedMilliseconds ?? 0;
-      if (!mounted || cancellationToken.isCanceled) {
-        if (sw != null) {
-          pdfrxLazyLog(
-            '#$_viewerInstanceId RENDER p${page.pageNumber} abandoned after ${waitedMs}ms in queue '
-            '(${!mounted ? 'viewer gone' : 'cancelled -- page left the cache extent'})',
-          );
-        }
-        return;
-      }
-      final prev = cache.pageImages[page.pageNumber];
-      if (prev != null && !prev.isDirty && prev.scale == scale) return;
-      PdfImage? img;
-      try {
-        img = await page.render(
-          fullWidth: width,
-          fullHeight: height,
-          backgroundColor: 0xffffffff,
-          annotationRenderingMode: widget.params.annotationRenderingMode,
-          flags: widget.params.limitRenderingCache ? PdfPageRenderFlags.limitedImageCache : PdfPageRenderFlags.none,
-          cancellationToken: cancellationToken,
-        );
-        if (img == null || !mounted || cancellationToken.isCanceled) {
+    try {
+      await cache.synchronized(() async {
+        final waitedMs = sw?.elapsedMilliseconds ?? 0;
+        if (!mounted || cancellationToken.isCanceled) {
           if (sw != null) {
-            // A null here is a silent failure that leaves the page white --
-            // pdfium declined to produce a bitmap and nothing upstream records
-            // it. Note render does not require the page to be measured: it
-            // happily renders at the estimated size.
-            final why = img == null ? 'pdfium returned no image' : (!mounted ? 'viewer gone' : 'cancelled mid-render');
             pdfrxLazyLog(
-              '#$_viewerInstanceId RENDER p${page.pageNumber} FAILED -- $why '
-              '(queued ${waitedMs}ms, total ${sw.elapsedMilliseconds}ms)',
+              '#$_viewerInstanceId RENDER p${page.pageNumber} abandoned after ${waitedMs}ms in queue '
+              '(${!mounted ? 'viewer gone' : 'cancelled -- page left the cache extent'})',
             );
           }
           return;
         }
-
-        final newImage = _PdfImageWithScale(await img.createImage(), scale, pageGeometry: _pageGeometryOf(page));
-        cache.pageImages[page.pageNumber]?.dispose();
-        cache.pageImages[page.pageNumber] = newImage;
-        if (sw != null) {
-          final fetched = Pdfrx.debugBytesFetched - bytesAtRequest;
-          pdfrxLazyLog(
-            '#$_viewerInstanceId RENDER p${page.pageNumber} ok ${width.round()}x${height.round()} '
-            'in ${sw.elapsedMilliseconds - waitedMs}ms (queued ${waitedMs}ms)  '
-            '${fetched > 0 ? 'NETWORK ${(fetched / 1024).toStringAsFixed(0)}KB' : 'cache hit'}',
+        final prev = cache.pageImages[page.pageNumber];
+        if (prev != null && !prev.isDirty && prev.scale == scale) return;
+        PdfImage? img;
+        try {
+          img = await page.render(
+            fullWidth: width,
+            fullHeight: height,
+            backgroundColor: 0xffffffff,
+            annotationRenderingMode: widget.params.annotationRenderingMode,
+            flags: widget.params.limitRenderingCache ? PdfPageRenderFlags.limitedImageCache : PdfPageRenderFlags.none,
+            cancellationToken: cancellationToken,
           );
+          if (img == null || !mounted || cancellationToken.isCanceled) {
+            if (sw != null) {
+              // A null here is a silent failure that leaves the page white --
+              // pdfium declined to produce a bitmap and nothing upstream records
+              // it. Note render does not require the page to be measured: it
+              // happily renders at the estimated size.
+              final why = img == null
+                  ? 'pdfium returned no image'
+                  : (!mounted ? 'viewer gone' : 'cancelled mid-render');
+              pdfrxLazyLog(
+                '#$_viewerInstanceId RENDER p${page.pageNumber} FAILED -- $why '
+                '(queued ${waitedMs}ms, total ${sw.elapsedMilliseconds}ms)',
+              );
+            }
+            return;
+          }
+
+          final newImage = _PdfImageWithScale(await img.createImage(), scale, pageGeometry: _pageGeometryOf(page));
+          cache.pageImages[page.pageNumber]?.dispose();
+          cache.pageImages[page.pageNumber] = newImage;
+          if (identical(cache, _imageCache)) _completeInitialPageImageWaiterIfReady();
+          if (sw != null) {
+            final fetched = Pdfrx.debugBytesFetched - bytesAtRequest;
+            pdfrxLazyLog(
+              '#$_viewerInstanceId RENDER p${page.pageNumber} ok ${width.round()}x${height.round()} '
+              'in ${sw.elapsedMilliseconds - waitedMs}ms (queued ${waitedMs}ms)  '
+              '${fetched > 0 ? 'NETWORK ${(fetched / 1024).toStringAsFixed(0)}KB' : 'cache hit'}',
+            );
+          }
+          _invalidate();
+        } catch (e) {
+          if (sw != null) {
+            pdfrxLazyLog('#$_viewerInstanceId RENDER p${page.pageNumber} THREW after ${sw.elapsedMilliseconds}ms: $e');
+          }
+          return; // ignore error
+        } finally {
+          img?.dispose();
         }
-        _invalidate();
-      } catch (e) {
-        if (sw != null) {
-          pdfrxLazyLog('#$_viewerInstanceId RENDER p${page.pageNumber} THREW after ${sw.elapsedMilliseconds}ms: $e');
-        }
-        return; // ignore error
-      } finally {
-        img?.dispose();
-      }
-    });
+      });
+    } finally {
+      cache.endPagePreviewRendering(page.pageNumber, cancellationToken);
+      // A page may leave the cache extent only transiently while progressive
+      // loading updates the layout. Repaint after its canceled request drains
+      // so the current extent, rather than the stale one, decides whether the
+      // page needs a new preview.
+      if (mounted && cancellationToken.isCanceled) _invalidate();
+    }
   }
 
   Future<void> _requestRealSizePartialImage(
@@ -2134,10 +2197,11 @@ class _PdfViewerState extends State<PdfViewer>
     if (!mounted || cancellationToken.isCanceled) return null;
     final pageRect = _layout!.pageLayouts[page.pageNumber - 1];
     final inPageRect = rect.translate(-pageRect.left, -pageRect.top);
-    final x = (inPageRect.left * scale).toInt();
-    final y = (inPageRect.top * scale).toInt();
-    final width = (inPageRect.width * scale).toInt();
-    final height = (inPageRect.height * scale).toInt();
+    final scaledRect = scaleRectForRendering(inPageRect, scale);
+    final fullWidth = pageRect.width * scale;
+    final fullHeight = pageRect.height * scale;
+    if (scaledRect == null || !fullWidth.isFinite || !fullHeight.isFinite) return null;
+    final (:x, :y, :width, :height) = scaledRect;
     if (width < 1 || height < 1) return null;
 
     var flags = 0;
@@ -2150,8 +2214,8 @@ class _PdfViewerState extends State<PdfViewer>
         y: y,
         width: width,
         height: height,
-        fullWidth: pageRect.width * scale,
-        fullHeight: pageRect.height * scale,
+        fullWidth: fullWidth,
+        fullHeight: fullHeight,
         backgroundColor: 0xffffffff,
         annotationRenderingMode: widget.params.annotationRenderingMode,
         flags: flags,
@@ -3963,11 +4027,21 @@ class _PdfPageImageCache {
   final pageImageRenderingTimers = <int, Timer>{};
   final pageImagesPartial = <int, _PdfImageWithScaleAndRect>{};
   final cancellationTokens = <int, List<PdfPageRenderCancellationToken>>{};
+  final pagePreviewRenderings = <int>{};
   final pageImagePartialRenderingRequests = <int, _PdfPartialImageRenderingRequest>{};
 
   void addCancellationToken(int pageNumber, PdfPageRenderCancellationToken token) {
     var tokens = cancellationTokens.putIfAbsent(pageNumber, () => []);
     tokens.add(token);
+  }
+
+  bool beginPagePreviewRendering(int pageNumber) => pagePreviewRenderings.add(pageNumber);
+
+  void endPagePreviewRendering(int pageNumber, PdfPageRenderCancellationToken token) {
+    pagePreviewRenderings.remove(pageNumber);
+    final tokens = cancellationTokens[pageNumber];
+    tokens?.remove(token);
+    if (tokens?.isEmpty ?? false) cancellationTokens.remove(pageNumber);
   }
 
   void releasePartialImages() {

@@ -383,6 +383,34 @@ void main() {
     await tester.pump(const Duration(milliseconds: 100));
   });
 
+  testWidgets('progressive loading starts from the initial page', (tester) async {
+    final document = _TestDocument(9);
+    addTearDown(document.dispose);
+
+    await tester.pumpWidget(
+      MaterialApp(
+        home: PdfViewer(
+          PdfDocumentRefDirect(document, autoDispose: false),
+          initialPageNumber: 8,
+          params: const PdfViewerParams(
+            behaviorControlParams: PdfViewerBehaviorControlParams(trailingPageLoadingDelay: Duration.zero),
+          ),
+        ),
+      ),
+    );
+    for (var i = 0; i < 20 && !document.progressiveLoadingStarted; i++) {
+      await tester.pump(const Duration(milliseconds: 10));
+      await tester.runAsync(() => Future<void>.delayed(const Duration(milliseconds: 10)));
+    }
+
+    expect(document.progressiveLoadingStarted, isTrue);
+    expect(document.progressiveLoadingStartPageNumber, 8);
+    expect(tester.takeException(), isNull);
+
+    await tester.pumpWidget(const SizedBox.shrink());
+    await tester.pump(const Duration(milliseconds: 100));
+  });
+
   testWidgets('progressive loading continues when priority loading fails', (tester) async {
     final document = _TestDocument(3, reloadError: UnimplementedError());
     addTearDown(document.dispose);
@@ -406,6 +434,49 @@ void main() {
     expect(document.progressiveLoadingStarted, isTrue);
     expect(document.pages.every((page) => page.isLoaded), isTrue);
     expect(tester.takeException(), isNull);
+
+    await tester.pumpWidget(const SizedBox.shrink());
+    await tester.pump(const Duration(milliseconds: 100));
+  });
+
+  testWidgets('a canceled preview is retried when its page becomes visible again', (tester) async {
+    await binding.setSurfaceSize(const Size(800, 600));
+    addTearDown(() => binding.setSurfaceSize(null));
+    final controller = PdfViewerController();
+    final document = _TestDocument(2);
+    addTearDown(document.dispose);
+    final renderControl = (document.pages.first as _TestPage).renderControl..block();
+
+    await tester.pumpWidget(
+      MaterialApp(
+        home: PdfViewer(
+          PdfDocumentRefDirect(document, autoDispose: false),
+          controller: controller,
+          params: const PdfViewerParams(
+            verticalCacheExtent: 0,
+            getPageRenderingScale: _largePreviewScale,
+            behaviorControlParams: PdfViewerBehaviorControlParams(trailingPageLoadingDelay: Duration.zero),
+          ),
+        ),
+      ),
+    );
+    for (var i = 0; i < 30 && !renderControl.started; i++) {
+      await tester.pump(const Duration(milliseconds: 10));
+      await tester.runAsync(() => Future<void>.delayed(const Duration(milliseconds: 10)));
+    }
+    expect(renderControl.renderCount, 1);
+
+    await controller.goToPage(pageNumber: 2, duration: Duration.zero);
+    await tester.pump();
+    await controller.goToPage(pageNumber: 1, duration: Duration.zero);
+    await tester.pump();
+
+    renderControl.release();
+    for (var i = 0; i < 30 && renderControl.renderCount < 2; i++) {
+      await tester.pump(const Duration(milliseconds: 10));
+      await tester.runAsync(() => Future<void>.delayed(const Duration(milliseconds: 10)));
+    }
+    expect(renderControl.renderCount, 2);
 
     await tester.pumpWidget(const SizedBox.shrink());
     await tester.pump(const Duration(milliseconds: 100));
@@ -642,6 +713,7 @@ class _TestDocument extends PdfDocument {
   late List<PdfPage> _pages;
   final reloadRequests = <List<int>?>[];
   bool progressiveLoadingStarted = false;
+  int? progressiveLoadingStartPageNumber;
 
   void reportMissingFonts() {
     _events.add(
@@ -684,8 +756,10 @@ class _TestDocument extends PdfDocument {
     PdfPageLoadingCallback<T>? onPageLoadProgress,
     T? data,
     Duration loadUnitDuration = const Duration(milliseconds: 250),
+    int? startPageNumber,
   }) async {
     progressiveLoadingStarted = true;
+    progressiveLoadingStartPageNumber = startPageNumber;
     _loadPages([for (var pageNumber = 1; pageNumber <= _pages.length; pageNumber++) pageNumber]);
     await onPageLoadProgress?.call(_pages.length, _pages.length, data);
     if (emitCompletionOnProgressive) {
@@ -731,6 +805,8 @@ class _TestDocument extends PdfDocument {
   @override
   Future<T> useNativeDocumentHandle<T>(FutureOr<T> Function(int nativeDocumentHandle) task) async => await task(0);
 }
+
+double _largePreviewScale(BuildContext context, PdfPage page, PdfViewerController controller, double scale) => 10;
 
 class _TestFontManager extends PdfFontManager {
   _TestFontManager() : super(resolvers: const []);
@@ -806,9 +882,12 @@ class _TestPageRenderControl {
 
   Future<void> beforeRender() async {
     started = true;
+    renderCount++;
     final gate = _gate;
     if (gate != null) await gate.future;
   }
+
+  int renderCount = 0;
 }
 
 class _TestCancellationToken implements PdfPageRenderCancellationToken {

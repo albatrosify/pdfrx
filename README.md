@@ -2,6 +2,12 @@
 
 This repository contains multiple Dart/Flutter packages for PDF rendering, viewing, and manipulation:
 
+## Requirements
+
+- Dart packages require Dart 3.13 or later.
+- Flutter packages require Flutter 3.47 or later.
+- Apple platform integrations target iOS 15 or later and macOS 12 or later.
+
 ## Packages
 
 ### [pdfrx_engine](https://pub.dev/packages/pdfrx_engine)
@@ -80,7 +86,7 @@ Add [pdfrx](https://pub.dev/packages/pdfrx) to your `pubspec.yaml`:
 
 ```yaml
 dependencies:
-  pdfrx: ^2.5.0
+  pdfrx: ^2.6.1
 ```
 
 ### For Pure Dart Applications
@@ -89,7 +95,7 @@ Add [pdfrx_engine](https://pub.dev/packages/pdfrx_engine) to your `pubspec.yaml`
 
 ```yaml
 dependencies:
-  pdfrx_engine: ^0.5.0
+  pdfrx_engine: ^0.6.0
 ```
 
 ## Documentation

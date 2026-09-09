@@ -1,17 +1,17 @@
 name: pdfium_flutter
 description: Flutter FFI plugin for PDFium integration on Android, iOS, Windows, macOS, and Linux.
-version: 0.2.3
+version: 0.3.0
 homepage: https://github.com/espresso3389/pdfrx
 repository: https://github.com/espresso3389/pdfrx/tree/master/packages/pdfium_flutter
 issue_tracker: https://github.com/espresso3389/pdfrx/issues
 
 environment:
-  sdk: ^3.10.0
-  flutter: ">=3.41.0"
+  sdk: ^3.13.0
+  flutter: ">=3.47.0"
 resolution: workspace
 
 dependencies:
-  pdfium_dart: ^0.2.5
+  pdfium_dart: ^0.3.0
   code_assets:
   ffi:
   flutter:

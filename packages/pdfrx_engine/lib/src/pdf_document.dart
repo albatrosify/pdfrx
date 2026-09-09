@@ -90,6 +90,9 @@ abstract class PdfDocument {
   ///
   /// Web only: [allowDataOwnershipTransfer] is used to determine if the data buffer can be transferred to
   /// the worker thread.
+  ///
+  /// On native PDFium platforms, [maxSizeToCacheOnMemory] is the maximum PDF size to load directly into native
+  /// memory. Larger documents use on-demand reads. The default is 1MB. Other backends ignore this option.
   static Future<PdfDocument> openData(
     Uint8List data, {
     PdfPasswordProvider? passwordProvider,
@@ -97,6 +100,7 @@ abstract class PdfDocument {
     bool useProgressiveLoading = false,
     String? sourceName,
     bool allowDataOwnershipTransfer = false,
+    int? maxSizeToCacheOnMemory,
     void Function()? onDispose,
   }) => PdfrxEntryFunctions.instance.openData(
     data,
@@ -105,6 +109,7 @@ abstract class PdfDocument {
     useProgressiveLoading: useProgressiveLoading,
     sourceName: sourceName,
     allowDataOwnershipTransfer: allowDataOwnershipTransfer,
+    maxSizeToCacheOnMemory: maxSizeToCacheOnMemory,
     onDispose: onDispose,
   );
 
@@ -222,11 +227,19 @@ abstract class PdfDocument {
   /// When [onPageLoadProgress] is called, it should return true to continue loading process or false to stop loading.
   /// [data] is an optional data that can be used to pass additional information to the callback.
   ///
+  /// [startPageNumber] is the 1-based page number to start measuring from. Pages are measured in order of their
+  /// distance from [startPageNumber], alternating after and before it (start, start+1, start-1, start+2, start-2, ...),
+  /// so that the pages around the one being displayed become available first. Pages that are already loaded are
+  /// skipped. When null (the default), pages are measured from the first page onward. Regardless of the order, all
+  /// pages are loaded when the function completes without being cancelled, and [PdfDocumentLoadCompleteEvent] is
+  /// emitted once.
+  ///
   /// It's always safe to call this function even if the pages are already loaded.
   Future<void> loadPagesProgressively<T>({
     PdfPageLoadingCallback<T>? onPageLoadProgress,
     T? data,
     Duration loadUnitDuration = const Duration(milliseconds: 250),
+    int? startPageNumber,
   });
 
   /// Pages.
@@ -322,7 +335,16 @@ abstract class PdfDocument {
 
 typedef PdfFontLoadResultCallback = FutureOr<void> Function(PdfFontLoadResult result);
 
-typedef PdfPageLoadingCallback<T> = FutureOr<bool> Function(int currentPageNumber, int totalPageCount, T? data);
+/// Callback function to notify progressive page loading progress; see [PdfDocument.loadPagesProgressively].
+///
+/// [loadedPageCount] is the number of pages whose real dimensions are loaded so far, including pages loaded by other
+/// means (e.g. [PdfDocument.reloadPages]). Because pages are not necessarily measured in page order, it is a count,
+/// not the number of the last loaded page.
+/// [totalPageCount] is the total number of pages in the document.
+/// [data] is the optional data passed to [PdfDocument.loadPagesProgressively].
+///
+/// Return true to continue loading or false to stop.
+typedef PdfPageLoadingCallback<T> = FutureOr<bool> Function(int loadedPageCount, int totalPageCount, T? data);
 
 /// Callback function to notify download progress.
 ///

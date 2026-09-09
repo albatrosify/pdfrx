@@ -8,14 +8,20 @@ This plugin provides a [`PdfrxEntryFunctions`](https://pub.dev/documentation/pdf
 runtime. It is intended for teams that prefer the system PDF stack on Apple platforms while keeping the pdfrx widget
 API.
 
+## Requirements
+
+- Flutter 3.47 or later (Dart 3.13 or later)
+- iOS 15 or later
+- macOS 12 or later
+
 ## Installation
 
 Add the package to your Flutter app:
 
 ```yaml
 dependencies:
-  pdfrx: ^2.5.0
-  pdfrx_coregraphics: ^0.3.0
+  pdfrx: ^2.6.0
+  pdfrx_coregraphics: ^0.4.0
 ```
 
 Set the CoreGraphics entry functions before initializing pdfrx:

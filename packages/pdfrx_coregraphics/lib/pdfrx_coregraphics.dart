@@ -85,6 +85,7 @@ class PdfrxCoreGraphicsEntryFunctions implements PdfrxEntryFunctions {
     String? sourceName,
     bool allowDataOwnershipTransfer = false,
     bool useProgressiveLoading = false,
+    int? maxSizeToCacheOnMemory,
     void Function()? onDispose,
   }) async {
     await init();
@@ -448,8 +449,9 @@ class _CoreGraphicsPdfDocument extends PdfDocument {
     PdfPageLoadingCallback<T>? onPageLoadProgress,
     T? data,
     Duration loadUnitDuration = const Duration(milliseconds: 250),
+    int? startPageNumber,
   }) async {
-    // CoreGraphics loads all pages immediately; nothing to do.
+    // CoreGraphics loads all pages immediately; nothing to do, so startPageNumber has no effect here.
   }
 
   @override
