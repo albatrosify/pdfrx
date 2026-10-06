@@ -416,7 +416,13 @@ class _PdfViewerState extends State<PdfViewer>
       oldWidget?.documentRef.resolveListenable().removeListener(_onDocumentChanged);
       final documentRef = widget.documentRef;
       await pdfrxFlutterInitialize();
-      if (!mounted || !identical(documentRef, widget.documentRef)) {
+      // A rebuild during the await above can replace widget.documentRef with a
+      // fresh-but-equal instance (PdfViewer.file constructs a new
+      // PdfDocumentRef on every build). Only bail when the widget now points
+      // at a DIFFERENT document (a real takeover); an instance-identity check
+      // silently dropped the load forever -- blank viewer, no error, until the
+      // widget happened to be recreated.
+      if (!mounted || widget.documentRef.key != documentRef.key) {
         return;
       }
       widget.documentRef.resolveListenable()
@@ -675,7 +681,9 @@ class _PdfViewerState extends State<PdfViewer>
       if (!mounted) return;
       if (succeeded && document == _document) {
         widget.params.onDocumentLoadFinished?.call(widget.documentRef, true);
-      } else if (!succeeded && identical(widget.documentRef, documentRef)) {
+      } else if (!succeeded && widget.documentRef.key == documentRef.key) {
+        // Key, not instance: a rebuild during loading may have swapped in a
+        // fresh-but-equal PdfDocumentRef, and the failure still applies.
         widget.params.onDocumentLoadFinished?.call(documentRef, false);
       }
     });
