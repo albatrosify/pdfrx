@@ -1,3 +1,22 @@
+# 2.6.5
+
+- Simplified the README and Material UI migration guidance, with links to the official migration documentation.
+
+# 2.6.4
+
+- Placed Requirements after the complete Getting Started section in the README.
+
+# 2.6.3
+
+- Moved requirements and Material UI migration guidance into the Getting Started section of the README.
+
+# 2.6.2
+
+- Fixed context menu crashes when Material UI localizations are unavailable and preserved Flutter-localized menu labels ([#719](https://github.com/espresso3389/pdfrx/pull/719), [#721](https://github.com/espresso3389/pdfrx/pull/721)).
+- Fixed text selection handle scrolling and tracking ([#715](https://github.com/espresso3389/pdfrx/pull/715)).
+- Improved rendering responsiveness during progressive loading with `pdfrx_engine` 0.6.1.
+- Updated to `pdfium_flutter` 0.3.1 for PDFium download improvements.
+
 # 2.6.1
 
 - Fixed static analysis lints while preserving the existing public constructor parameter names.
