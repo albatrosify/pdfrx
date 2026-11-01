@@ -51,9 +51,11 @@ abstract class PdfPage {
   /// - [annotationRenderingMode] controls to render annotations or not. The default is [PdfAnnotationRenderingMode.annotationAndForms].
   /// - [flags] is used to specify additional rendering flags. The default is [PdfPageRenderFlags.none].
   /// - [cancellationToken] can be used to cancel the rendering process. It must be created by [createCancellationToken].
+  /// - [priority] controls scheduling on backends that support it. When omitted, rendering is high priority, or low
+  ///   priority inside `Pdfrx.runAsBackgroundWork`. It does not change image quality.
   ///
-  /// If the page is not loaded yet (progressive loading case only), the function renders empty page with specified
-  /// background color.
+  /// If the page is not loaded yet (progressive loading case only), its dimensions and rotation may be estimates.
+  /// Rendering behavior for an unloaded page depends on the backend.
   ///
   /// The following code extract the area of (20,30)-(120,130) from the page image rendered at 1000x1500 pixels:
   /// ```dart
@@ -78,6 +80,7 @@ abstract class PdfPage {
     PdfAnnotationRenderingMode annotationRenderingMode = PdfAnnotationRenderingMode.annotationAndForms,
     int flags = PdfPageRenderFlags.none,
     PdfPageRenderCancellationToken? cancellationToken,
+    PdfPageRenderPriority? priority,
   });
 
   /// Create [PdfPageRenderCancellationToken] to cancel the rendering process.
@@ -156,9 +159,11 @@ extension PdfPageBaseExtensions on PdfPage {
   ///
   /// To access the raw text, use [loadText].
   ///
-  /// If the page is not loaded yet (progressive loading case only), this function returns null.
-  Future<PdfPageText> loadStructuredText({bool ensureLoaded = true}) =>
-      PdfTextFormatter.loadStructuredText(this, pageNumberOverride: pageNumber);
+  /// Returns empty text for an unloaded page unless [ensureLoaded] is true, in which case it waits for loading.
+  Future<PdfPageText> loadStructuredText({bool ensureLoaded = false}) async {
+    final page = ensureLoaded && !isLoaded ? await this.ensureLoaded() : this;
+    return PdfTextFormatter.loadStructuredText(page, pageNumberOverride: pageNumber);
+  }
 
   /// Stream of page status change events for this page.
   ///
@@ -185,37 +190,42 @@ extension PdfPageBaseExtensions on PdfPage {
   ///
   /// If you want to specify a timeout, use [waitForLoaded] instead.
   Future<PdfPage> ensureLoaded() async {
-    return (await waitForLoaded())!;
+    return await waitForLoaded() ?? (throw StateError('Document closed before page $pageNumber was loaded.'));
   }
 
   /// Wait until the page is really loaded.
   ///
   /// Returns the latest instance of the page once it is loaded.
-  /// If [timeout] is specified, it returns null if the page is not loaded within the duration. otherwise,
-  /// it waits indefinitely and never returns null.
-  Future<PdfPage?> waitForLoaded({Duration? timeout}) async {
+  /// Returns null on [timeout], [cancelLoading], or document closure.
+  Future<PdfPage?> waitForLoaded({Duration? timeout, Future<void>? cancelLoading}) async {
     final newPage = document.pages[pageNumber - 1];
     if (newPage.isLoaded) {
       return newPage;
     }
     final completer = Completer<PdfPage?>();
-    late StreamSubscription<PdfPageStatusChange> subscription;
-    subscription = events.listen((event) {
-      if (event.page.isLoaded) {
-        subscription.cancel();
-        completer.complete(event.page); // get the latest instance
-      }
-    });
-    if (timeout != null) {
-      return completer.future.timeout(
-        timeout,
-        onTimeout: () {
-          subscription.cancel();
-          return null;
-        },
-      );
+    void complete(PdfPage? page) {
+      if (!completer.isCompleted) completer.complete(page);
     }
-    return completer.future;
+
+    void completeError(Object error, StackTrace stack) {
+      if (!completer.isCompleted) completer.completeError(error, stack);
+    }
+
+    final subscription = events.listen(
+      (event) {
+        if (event.page.isLoaded) complete(event.page);
+      },
+      onDone: () => complete(null),
+      onError: completeError,
+    );
+    final timer = timeout == null ? null : Timer(timeout, () => complete(null));
+    cancelLoading?.then((_) => complete(null), onError: completeError);
+    try {
+      return await completer.future;
+    } finally {
+      timer?.cancel();
+      await subscription.cancel();
+    }
   }
 }
 
@@ -366,4 +376,16 @@ abstract class PdfPageRenderCancellationToken {
 
   /// Determine whether the rendering process is canceled or not.
   bool get isCanceled;
+}
+
+/// Scheduling priority for page rendering. Backends may treat this as a hint.
+enum PdfPageRenderPriority {
+  /// Content the user is waiting to see.
+  high,
+
+  /// Work that can wait for visible content.
+  normal,
+
+  /// Speculative work such as prefetching and thumbnails.
+  low,
 }

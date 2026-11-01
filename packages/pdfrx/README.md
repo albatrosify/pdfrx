@@ -1,5 +1,7 @@
 # pdfrx
 
+Upgrading to 2.10.0: existing viewer usage and render calls remain compatible. Custom `PdfPage.render` implementations must accept the new optional `PdfPageRenderPriority? priority` parameter. See the [engine migration notes](https://github.com/espresso3389/pdfrx/tree/master/packages/pdfrx_engine#rendering-priority-and-migration-to-080). With pdfrx 2.11.0, CoreGraphics users should use `pdfrx_coregraphics` 0.5.1 or later.
+
 [![Build Test](https://github.com/espresso3389/pdfrx/actions/workflows/build-test.yml/badge.svg)](https://github.com/espresso3389/pdfrx/actions/workflows/build-test.yml)
 
 [pdfrx](https://pub.dartlang.org/packages/pdfrx) is a rich and fast PDF viewer and manipulation plugin for Flutter. It provides ready-to-use widgets for displaying and editing PDF documents, including page manipulation, document combining, and image import in your Flutter applications.
@@ -53,6 +55,10 @@ class _MyAppState extends State<MyApp> {
 
 Anyway, please follow the instructions below to install on your environment.
 
+## Requirements
+
+Flutter 3.47 / Dart 3.13 or later, with iOS 15+ and macOS 12+ for Apple targets. Native builds require a C toolchain to compile a small bundled library that prevents simultaneous PDFium access from multiple Flutter engines; see [native build requirements](https://github.com/espresso3389/pdfrx/blob/master/doc/pdfrx-Initialization.md#native-build-requirements).
+
 ## Getting Started
 
 ### Installation
@@ -61,7 +67,7 @@ Add this to your package's `pubspec.yaml` file and execute `flutter pub get`:
 
 ```yaml
 dependencies:
-  pdfrx: ^2.6.5
+  pdfrx: ^2.11.0
 ```
 
 **Note:** You only need to add `pdfrx` to your dependencies. The `pdfrx_engine` package is automatically included as a dependency of `pdfrx`.

@@ -10,6 +10,8 @@ This package depends on [pdfium_dart](https://pub.dartlang.org/packages/pdfium_d
 
 - Dart 3.13 or later
 
+Native builds also require a C toolchain to compile a small bundled library that prevents simultaneous PDFium access from multiple Flutter engines. This library is built even when that protection is disabled at runtime. See [native build requirements](https://github.com/espresso3389/pdfrx/blob/master/doc/pdfrx-Initialization.md#native-build-requirements).
+
 ## Multi-platform support
 
 - Android
@@ -38,19 +40,33 @@ void main() async {
   await pdfrxInitialize();
 
   final document = await PdfDocument.openFile('test.pdf');
-  final page = document.pages[0]; // first page
-  final pageImage = await page.render(
-    width: page.width * 200 / 72,
-    height: page.height * 200 / 72,
-  );
-  final image = pageImage!.createImageNF();
-  await File('output.png').writeAsBytes(img.encodePng(image));
-  pageImage.dispose();
-  document.close();
+  try {
+    if (document.pages.isEmpty) return;
+    final page = document.pages.first;
+    final pageImage = await page.render(
+      width: (page.width * 200 / 72).round(),
+      height: (page.height * 200 / 72).round(),
+    );
+    if (pageImage == null) return;
+    try {
+      final image = pageImage.createImageNF();
+      await File('output.png').writeAsBytes(img.encodePng(image));
+    } finally {
+      pageImage.dispose();
+    }
+  } finally {
+    await document.dispose();
+  }
 }
 ```
 
 You should call [pdfrxInitialize()](https://pub.dev/documentation/pdfrx_engine/latest/pdfrx_engine/pdfrxInitialize.html) before using any PDF engine APIs to ensure the native PDFium library is properly loaded. For more information, see [pdfrx Initialization](https://github.com/espresso3389/pdfrx/blob/master/doc/pdfrx-Initialization.md)
+
+### Rendering priority and migration to 0.8.0
+
+Pass `priority: PdfPageRenderPriority.low` to [PdfPage.render](https://pub.dev/documentation/pdfrx_engine/latest/pdfrx_engine/PdfPage/render.html) for speculative renders such as thumbnails. Native PDFium supports `high`, `normal`, and `low` scheduling priorities; this does not change image quality. Without a priority, rendering uses high priority normally and low priority inside [Pdfrx.runAsBackgroundWork](https://pub.dev/documentation/pdfrx_engine/latest/pdfrx_engine/Pdfrx/runAsBackgroundWork.html). An explicit priority overrides that scope. Web and CoreGraphics accept the hint without changing scheduling.
+
+Existing render calls need no changes. Custom classes that extend or implement [PdfPage](https://pub.dev/documentation/pdfrx_engine/latest/pdfrx_engine/PdfPage-class.html) must add `PdfPageRenderPriority? priority` to their `render` named parameters. Wrappers should pass `priority: priority` to the underlying page. This also applies to custom pages imported through `pdfrx` 2.10.0.
 
 ### Page Manipulation Example
 
@@ -82,9 +98,9 @@ void main() async {
   await File('combined.pdf').writeAsBytes(pdfData);
 
   // Clean up
-  doc1.dispose();
-  doc2.dispose();
-  outputDoc.dispose();
+  await doc1.dispose();
+  await doc2.dispose();
+  await outputDoc.dispose();
 }
 ```
 
@@ -114,7 +130,7 @@ void main() async {
   final pdfData = await doc.encodePdf();
   await File('output.pdf').writeAsBytes(pdfData);
 
-  doc.dispose();
+  await doc.dispose();
 }
 ```
 
@@ -124,6 +140,15 @@ For detailed guides and tutorials, see the [documentation](https://github.com/es
 
 - [PDF Page Manipulation](https://github.com/espresso3389/pdfrx/blob/master/doc/PDF-Page-Manipulation.md) - Re-arrange, combine, and extract PDF pages
 - [Importing Images to PDF](https://github.com/espresso3389/pdfrx/blob/master/doc/Importing-Images-to-PDF.md) - Convert images to PDF and insert images into PDFs
+
+## Loading and Performance Guides
+
+- [Progressive loading](https://github.com/espresso3389/pdfrx/blob/master/doc/Progressive-Loading.md): page metadata, on-demand measurement, and page-state events.
+- [PDF open benchmark](tool/PDF_OPEN_BENCHMARK.md): a manual probe for document opening, page measurement, and link extraction.
+- [Hebrew text normalization](https://github.com/espresso3389/pdfrx/blob/master/doc/Text-Search.md#hebrew-text-order): opt-in native text-order correction.
+
+- [Background work and memory](https://github.com/espresso3389/pdfrx/blob/master/doc/Progressive-Loading.md#background-work): lower-priority native operations and viewer image-cache release.
+- [Document lifetime](https://github.com/espresso3389/pdfrx/blob/master/doc/PDF-Page-Manipulation.md#document-lifetime): awaiting disposal and keeping assembly sources alive.
 
 ## PDF API
 

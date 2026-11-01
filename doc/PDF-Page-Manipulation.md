@@ -95,7 +95,7 @@ final doc = await PdfDocument.openFile('document.pdf');
 
 // Use the rotated page in page manipulation
 doc.pages = [
-  doc.pages[0],          // Page 2 with original rotation
+  doc.pages[0],          // Page 1 with original rotation
   doc.pages[1],          // Page 2 with original rotation
   doc.pages[2].rotatedCW90(), // Page 3 rotated right
 ];
@@ -116,8 +116,8 @@ final pdfBytes = await document.encodePdf();
 await File('output.pdf').writeAsBytes(pdfBytes);
 
 // dispose the documents after use
-doc1.dispose();
-doc2.dispose();
+await doc1.dispose();
+await doc2.dispose();
 ```
 
 ### The assemble() Function
@@ -132,36 +132,44 @@ doc1.pages = [...doc1.pages, ...doc2.pages, ...doc3.pages];
 await doc1.assemble();
 
 // Now you can safely dispose doc2 and doc3
-doc2.dispose();
-doc3.dispose();
+await doc2.dispose();
+await doc3.dispose();
 
 // doc1 is still valid and can be encoded later
 final bytes = await doc1.encodePdf();
 
-doc1.dispose();
+await doc1.dispose();
 ```
 
 **Important Notes:**
 
 - [PdfDocument.assemble](https://pub.dev/documentation/pdfrx_engine/latest/pdfrx_engine/PdfDocument/assemble.html) is automatically called by [PdfDocument.encodePdf](https://pub.dev/documentation/pdfrx_engine/latest/pdfrx_engine/PdfDocument/encodePdf.html), so you don't need to call it explicitly before encoding
 - Call [PdfDocument.assemble](https://pub.dev/documentation/pdfrx_engine/latest/pdfrx_engine/PdfDocument/assemble.html) explicitly when you want to release source documents early to free memory
-- After calling [PdfDocument.assemble](https://pub.dev/documentation/pdfrx_engine/latest/pdfrx_engine/PdfDocument/assemble.html), the document becomes independent and source documents can be safely disposed
+- After awaiting [PdfDocument.assemble](https://pub.dev/documentation/pdfrx_engine/latest/pdfrx_engine/PdfDocument/assemble.html), the document becomes independent and source documents can be safely disposed
+
+### Document Lifetime
+
+Keep every source document open until `assemble()` or `encodePdf()` completes. Do not change the source or destination page lists while assembly is in progress. Assigning pages from another document does not immediately copy them; disposing that source before assembly starts makes the operation invalid.
+
+On native PDFium, disposal waits for already-started operations, including queued work and source imports. New independent operations are rejected once disposal begins. Use `await document.dispose()` when cleanup must finish before continuing. After successful assembly, use the destination's updated `pages` list; previously retained source page objects still belong to their source documents.
+
+Advanced callers using raw document handles with `PdfrxEntryFunctions.compute` must keep the documents alive themselves. Within `useNativeDocumentHandle`, do not await another worker operation or disposal of the same document, and do not retain the handle after the callback completes.
 
 ## Complete Working Examples
 
 ### Command-Line PDF Combiner
 
-The [pdfcombine.dart](../packages/pdfrx_engine/example/pdfcombine.dart) example demonstrates a full-featured command-line tool for combining PDFs:
+The [pdfcombine.dart](../packages/pdfrx_engine/example/pdfcombine.dart) example demonstrates a command-line tool for combining PDFs. Run these commands from the `packages/pdfrx_engine` directory:
 
 ```bash
 # Combine entire documents
-dart run pdfrx_engine:pdfcombine -o output.pdf doc1.pdf doc2.pdf doc3.pdf -- a b c
+dart run example/pdfcombine.dart -o output.pdf doc1.pdf doc2.pdf doc3.pdf -- a b c
 
 # Combine specific page ranges
-dart run pdfrx_engine:pdfcombine -o output.pdf doc1.pdf doc2.pdf -- a[1-10] b[5-15]
+dart run example/pdfcombine.dart -o output.pdf doc1.pdf doc2.pdf -- 'a[1-10]' 'b[5-15]'
 
 # Mix pages from multiple documents
-dart run pdfrx_engine:pdfcombine -o output.pdf doc1.pdf doc2.pdf -- a[1-3] b a[4-6] b[1-2]
+dart run example/pdfcombine.dart -o output.pdf doc1.pdf doc2.pdf -- 'a[1-3]' b 'a[4-6]' 'b[1-2]'
 ```
 
 Key features:
