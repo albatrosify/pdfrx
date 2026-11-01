@@ -3,6 +3,7 @@ import 'dart:developer' as developer;
 import 'dart:typed_data';
 
 import 'package:http/http.dart' as http;
+import 'package:meta/meta.dart';
 
 /// Emits a [Pdfrx.debugLazyLoading] trace line.
 ///
@@ -33,6 +34,16 @@ class Pdfrx {
   /// measurement that moves this counter was waiting on the network, one that
   /// does not was waiting on the pdfium worker.
   static int debugBytesFetched = 0;
+
+  /// Whether `PdfPage.loadText` (and so `PdfPage.loadStructuredText`) restores logical order to Hebrew text
+  /// stored in visual order. Legacy decoding additionally requires [decodeLegacyHebrewText].
+  ///
+  /// See `PdfHebrewTextNormalizer`. Off by default. Supported by the native PDFium backend.
+  static bool normalizeHebrewText = false;
+
+  /// Also decode ambiguous legacy font encodings when [normalizeHebrewText] is enabled.
+  /// This heuristic can misidentify accented Latin text; enable only for known broken Hebrew PDFs.
+  static bool decodeLegacyHebrewText = false;
 
   /// Explicitly specify pdfium module path for special purpose.
   ///
@@ -76,4 +87,49 @@ class Pdfrx {
   static String? cacheDirectoryPath;
 
   static Map<String, int>? pdfiumNativeBindings;
+
+  /// Runs [action] with the PDFium work it starts scheduled as background work.
+  ///
+  /// The native PDFium backend runs PDFium calls on one worker. Operations started inside [action] use lower
+  /// priority unless they specify one explicitly; this includes page renders with no explicit priority. Other
+  /// backends run [action] unchanged.
+  ///
+  /// Native page renders yield cooperatively at PDFium pause points, but individual native calls and final form
+  /// drawing may not be interruptible. Background work can wait indefinitely while higher-priority work keeps
+  /// arriving. Calls started by asynchronous work in this zone inherit its priority.
+  /// The PDFium backend protects the documents used by its own operations, including sources of `assemble()`.
+  /// Raw native handles passed to `PdfrxEntryFunctions.compute` are not tracked: await those calls before disposing
+  /// their documents, and do not retain a handle beyond `useNativeDocumentHandle`'s callback.
+  static Future<T> runAsBackgroundWork<T>(FutureOr<T> Function() action) =>
+      runZoned(() async => await action(), zoneValues: {backgroundWorkZoneKey: true});
+
+  /// The zone value set by [runAsBackgroundWork].
+  @internal
+  static const backgroundWorkZoneKey = #pdfrx.backgroundWork;
+
+  /// Serialize PDFium across Flutter engines in one OS process.
+  ///
+  /// Set this on every engine before `PdfrxEntryFunctions.init` /
+  /// `pdfrxFlutterInitialize` when using `desktop_multi_window` (or any
+  /// multi-engine host). The `pdfrx_pdfium_gate` native asset from pdfium_dart
+  /// is bundled automatically.
+  ///
+  /// Consequences: the Dart font mapper is not installed (PDFium's built-in
+  /// mapper is used), and `FPDF_DestroyLibrary` is not called when an engine
+  /// stops its worker — PDFium stays alive until process exit.
+  ///
+  /// Default is `false`. Single-engine apps are unchanged.
+  static bool get useProcessWidePdfiumGate => _useProcessWidePdfiumGate;
+  static bool _useProcessWidePdfiumGate = false;
+  static bool _gateConfigurationLocked = false;
+
+  static set useProcessWidePdfiumGate(bool value) {
+    if (_gateConfigurationLocked && value != _useProcessWidePdfiumGate) {
+      throw StateError('Configure the process-wide PDFium gate before starting any PDFium worker.');
+    }
+    _useProcessWidePdfiumGate = value;
+  }
+
+  @internal
+  static void lockProcessWidePdfiumGateConfiguration() => _gateConfigurationLocked = true;
 }

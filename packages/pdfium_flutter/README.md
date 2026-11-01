@@ -10,6 +10,8 @@ This package is part of the [pdfrx](https://github.com/espresso3389/pdfrx) proje
 - iOS 15 or later
 - macOS 12 or later
 
+Native builds also require a C toolchain to compile a small bundled library that prevents simultaneous PDFium access from multiple Flutter engines. This library is built even when that protection is disabled at runtime. See [native build requirements](https://github.com/espresso3389/pdfrx/blob/master/doc/pdfrx-Initialization.md#native-build-requirements).
+
 ## Overview
 
 This package provides:
@@ -56,6 +58,6 @@ PDFium XCFramework is downloaded using CocoaPods/SwiftPM install from [espresso3
 
 The native-assets link hooks coordinate this behavior at build time so the Flutter app links the XCFramework once and does not also bundle the native asset dylib from `pdfium_dart`.
 
-The packaged Darwin XCFramework uses [PDFium chromium/7811, build 20260502-190206](https://github.com/espresso3389/pdfium-xcframework/releases/tag/v144.0.7811.0-20260502-190206).
+The packaged Darwin XCFramework uses [PDFium chromium/8125, build 20261029-150241](https://github.com/espresso3389/pdfium-xcframework/releases/tag/v158.0.8125.0-20261029-150241).
 
 **Implementation note:** `pdfium_flutter` re-exports the lower-level `pdfium_dart` bindings. Flutter apps should normally import `pdfium_flutter` so all native platform packaging is included.
