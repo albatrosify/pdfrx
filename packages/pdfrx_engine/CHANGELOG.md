@@ -1,3 +1,37 @@
+# 0.9.6
+
+- Share progressive page measurements across concurrent PDFium consumers, and reload native pages in chunks so other work can run between them. [#833](https://github.com/espresso3389/pdfrx/pull/833), [#841](https://github.com/espresso3389/pdfrx/pull/841)
+- Honor HTTP freshness, validation and `no-store` directives. Complete cached PDFs reopen from the payload offset even with large cache headers. [#837](https://github.com/espresso3389/pdfrx/pull/837), [#844](https://github.com/espresso3389/pdfrx/pull/844)
+- Close native document and form handles before releasing their backing data when opening a PDF fails. [#836](https://github.com/espresso3389/pdfrx/pull/836), [#844](https://github.com/espresso3389/pdfrx/pull/844)
+- Share concurrent missing-font loads and coordinate registrations with font cache resets. [#838](https://github.com/espresso3389/pdfrx/pull/838)
+- Bound cached page-link metadata and reduce text-cache bookkeeping for large selections. [#839](https://github.com/espresso3389/pdfrx/pull/839), [#834](https://github.com/espresso3389/pdfrx/pull/834)
+- Reduce repeated character geometry scans when normalizing Hebrew text. [#832](https://github.com/espresso3389/pdfrx/pull/832)
+
+# 0.9.5
+
+- Reduced the overhead of progressive page loading in large PDFs, especially when using short load intervals. Pages replaced during loading retain their updated state. [#828](https://github.com/espresso3389/pdfrx/pull/828)
+
+# 0.9.4
+
+- Requires Dart 3.14 or later.
+- Updated dependency constraints (`archive`, `image`, `synchronized`) and `pdfium_dart` 0.4.4.
+
+# 0.9.3
+
+- Isolated authenticated document caches and corrected HTTP range and compressed response handling ([#811](https://github.com/espresso3389/pdfrx/pull/811), [#808](https://github.com/espresso3389/pdfrx/pull/808)).
+- Fixed error handling and synchronization for custom document reads ([#806](https://github.com/espresso3389/pdfrx/pull/806), [#807](https://github.com/espresso3389/pdfrx/pull/807)).
+- Corrected HTTP cache directives and PDF text hashing ([#809](https://github.com/espresso3389/pdfrx/pull/809), [#799](https://github.com/espresso3389/pdfrx/pull/799)).
+- Updated to `pdfium_dart` 0.4.3.
+
+# 0.9.2
+
+- Updated to `pdfium_dart` 0.4.2 for macOS framework and Flutter test fixes ([#814](https://github.com/espresso3389/pdfrx/issues/814), [#818](https://github.com/espresso3389/pdfrx/issues/818)).
+
+# 0.9.1
+
+- Fixed an error when a text selection spans a page with no text fragments ([#790](https://github.com/espresso3389/pdfrx/issues/790)).
+- Fixed native URI loading for large PDFs served without a `Content-Length` header, and released the download cache file after a full download ([#778](https://github.com/espresso3389/pdfrx/issues/778)).
+
 # 0.9.0
 
 - Fixed a process-wide PDFium gate deadlock when concurrent workers stop ([#788](https://github.com/espresso3389/pdfrx/pull/788)).

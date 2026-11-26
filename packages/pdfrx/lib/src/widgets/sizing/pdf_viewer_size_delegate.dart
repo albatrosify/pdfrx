@@ -2,6 +2,7 @@ import 'package:flutter/rendering.dart';
 import 'package:pdfrx_engine/pdfrx_engine.dart';
 
 import '../interactive_viewer.dart';
+import '../layout/pdf_fit_mode.dart';
 import '../pdf_viewer.dart';
 import '../pdf_viewer_layout_metrics.dart';
 import '../pdf_viewer_params.dart';
@@ -70,8 +71,12 @@ abstract class PdfViewerSizeDelegate {
   /// [viewSize]: The current size of the widget.
   /// [layout]: The current PDF layout (may be null during first build).
   /// [pageNumber]: The page currently being viewed (used to calculate "fit page" logic).
-  /// [pageMargin]: The margin configuration from parameters.
+  /// [pageMargin]: The page margin baked into [layout]; always equal to `layout?.margin` (0 when
+  /// [layout] is null). Kept as an argument for source compatibility.
   /// [boundaryMargin]: The boundary margin configuration from parameters.
+  ///
+  /// The [PdfFitMode] the layout was produced with is available as `layout?.fitMode`; delegates
+  /// can use it to floor the min scale (fit-width for `fill`/`cover`, fit-page for `fit`).
   PdfViewerLayoutMetrics calculateMetrics({
     required Size viewSize,
     required PdfPageLayout? layout,
@@ -162,10 +167,15 @@ class PdfViewerLayoutSnapshot {
   /// the delegate's calculation in [PdfViewerSizeDelegate.calculateMetrics].
   final double minScale;
 
-  /// The scale required to fit the document's bounding box within the viewport.
+  /// The home zoom of the document.
+  ///
+  /// For [PdfFitMode.fill] and [PdfFitMode.fit] layouts, whose geometry is already sized to the
+  /// viewport, it fits the document across the scroll axis (about 1.0). Otherwise it is the scale
+  /// at which the document covers the viewport (the larger of the fit-width and fit-height scales).
   final double coverScale;
 
-  /// The scale required to fit the content (usually the current page) entirely within the viewport.
+  /// The scale required to fit the content (the spread of the current page: the page itself, or
+  /// e.g. both facing pages) entirely within the viewport.
   ///
   /// Conventionally, delegates calculate this as the "Fit Page" scale.
   ///
@@ -188,4 +198,20 @@ class PdfViewerLayoutSnapshot {
 
   @override
   int get hashCode => Object.hash(viewSize, layout, minScale, coverScale, alternativeFitScale);
+}
+
+/// Whether a layout update changed the [PdfFitMode] (e.g. [PdfFitMode.none] to [PdfFitMode.fit]
+/// or back).
+///
+/// In that case the previous zoom is meaningless for the new geometry: switching to
+/// [PdfFitMode.fit] at 1.3x would crop the fitted page, and leaving it while at its min scale
+/// would jump to the new layout's (possibly tiny) min scale. Delegates should go to the new
+/// layout's home zoom, [PdfViewerLayoutSnapshot.coverScale] (the same zoom used initially),
+/// instead of preserving the zoom. For [PdfFitMode.fill]/[PdfFitMode.fit] geometry that is about
+/// 1.0.
+bool shouldResetZoomForFitMode(PdfViewerLayoutSnapshot oldState, PdfViewerLayoutSnapshot newState) {
+  final oldLayout = oldState.layout;
+  final newLayout = newState.layout;
+  if (oldLayout == null || newLayout == null) return false;
+  return oldLayout.fitMode != newLayout.fitMode;
 }

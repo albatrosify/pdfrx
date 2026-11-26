@@ -8,6 +8,8 @@ import 'dart:ui_web' as ui_web;
 import 'package:crypto/crypto.dart';
 import 'package:pdfrx_engine/pdfrx_engine.dart';
 // ignore: implementation_imports
+import 'package:pdfrx_engine/src/font_environment.dart';
+// ignore: implementation_imports
 import 'package:pdfrx_engine/src/pdf_page_proxies.dart';
 import 'package:rxdart/rxdart.dart';
 import 'package:synchronized/extension.dart';
@@ -396,10 +398,10 @@ class PdfrxEntryFunctionsWasmImpl extends PdfrxEntryFunctions {
   }
 
   @override
-  Future<void> clearAllFontData() async {
+  Future<void> clearAllFontData() => changeFontEnvironment(() async {
     await init();
     await _sendCommand('clearAllFontData', parameters: {'dummy': true});
-  }
+  });
 
   @override
   PdfrxBackendType get backendType => PdfrxBackendType.pdfiumWasm;
@@ -504,6 +506,7 @@ class _PdfDocumentWasm extends PdfDocument {
             'loadUnitDuration': loadUnitDuration.inMilliseconds,
           },
         );
+        if (isDisposed) return;
         final pagesLoaded = parsePages(this, result['pages'] as List<dynamic>);
         for (final page in pagesLoaded) {
           newPages[page.pageNumber - 1] = page; // Update the existing page
@@ -551,6 +554,7 @@ class _PdfDocumentWasm extends PdfDocument {
   Future<void> reloadPages({List<int>? pageNumbersToReload}) async {
     if (isDisposed) return;
     await synchronized(() async {
+      if (isDisposed) return;
       final pageIndices = pageNumbersToReload?.map((n) => n - 1).toList();
       final result = await _sendCommand(
         'reloadPages',
@@ -560,6 +564,7 @@ class _PdfDocumentWasm extends PdfDocument {
           'currentPagesCount': pages.length,
         },
       );
+      if (isDisposed) return;
       final reloadedPages = parsePages(this, result['pages'] as List<dynamic>);
       final newPages = pages.toList();
       for (final page in reloadedPages) {
@@ -620,12 +625,14 @@ class _PdfDocumentWasm extends PdfDocument {
     _pages = List.unmodifiable(pages);
     if (changes.isNotEmpty || pages.length != previousPageCount) {
       _documentLoadCompleteNotified = false;
-      subject.add(PdfDocumentPageStatusChangedEvent(this, changes: changes));
+      if (!isDisposed) {
+        subject.add(PdfDocumentPageStatusChangedEvent(this, changes: changes));
+      }
     }
   }
 
   void updateMissingFonts(Map<dynamic, dynamic>? missingFonts) {
-    if (missingFonts == null || missingFonts.isEmpty) {
+    if (isDisposed || missingFonts == null || missingFonts.isEmpty) {
       return;
     }
     final fontQueries = <PdfFontQuery>[];

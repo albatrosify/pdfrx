@@ -1,10 +1,11 @@
 # pdfrx Documentation
 
-Welcome to the pdfrx documentation! These guides describe the current repository code. They can include changes not yet published on pub.dev. Feature-specific version notes indicate when an API became available; check the pub.dev API reference for the version you use.
+Welcome to the pdfrx documentation! These guides describe the current repository code. They can include changes not yet published on pub.dev. Check the pub.dev API reference for the version you use.
 
 ## Getting Started
 
 - [pdfrx Initialization](pdfrx-Initialization.md) - How to properly initialize pdfrx in your app
+- [Migrating to pdfrx 3.0](Migrating-to-pdfrx-3.0.md) - Layout strategies replacing `layoutPages`/`margin`, and removed deprecated APIs
 - [Progressive Loading](Progressive-Loading.md) - Understanding and using progressive page loading for large PDFs
 
 ## Core Features
@@ -18,8 +19,9 @@ Welcome to the pdfrx documentation! These guides describe the current repository
 
 - [Document Outline (Bookmarks)](Document-Outline-(a.k.a-Bookmarks).md) - Working with PDF bookmarks
 - [PDF Link Handling](PDF-Link-Handling.md) - Handling links within PDFs
-- [Page Layout Customization](Page-Layout-Customization.md) - Customizing page layouts
+- [Page Layout Customization](Page-Layout-Customization.md) - Layout strategies, fit modes, facing pages, and one page at a time
 - [Zoom Gestures](Double-tap-to-Zoom.md) - Double-tap zoom, pinch sensitivity, and inertia limits
+- [Visible Page Rendering State](Visible-Page-Rendering-State.md) - Knowing when the pages on screen are fully rendered
 
 ### UI Customization
 
@@ -55,5 +57,5 @@ For detailed API documentation, visit the [pub.dev documentation](https://pub.de
 ## Development and Diagnostics
 
 - [Development commands](agents/COMMANDS.md) - Tests, builds, and binding generation
-- [PDF open benchmark](../packages/pdfrx_engine/tool/PDF_OPEN_BENCHMARK.md) - Manual measurements of loading and link extraction
-- [Android native-loading tests](../packages/pdfrx/example/viewer/doc/android-native-loading-tests.md) - Device and Firebase Test Lab checks
+- [PDF open benchmark](../packages/pdfrx_engine/README.md#pdf-open-benchmark) - Manual measurements of loading and link extraction
+- [Android native-loading test](../packages/pdfrx/example/viewer/README.md#android-native-loading-test) - Device or emulator check

@@ -1,5 +1,3 @@
-import 'dart:math' as math;
-
 import 'package:file_selector/file_selector.dart' as fs;
 import 'package:flutter/foundation.dart';
 import 'package:material_ui/material_ui.dart';
@@ -119,11 +117,7 @@ class _MainPageState extends State<MainPage> with WidgetsBindingObserver, Single
                   FilledButton(onPressed: () => openUri(), child: Text('Open URL')),
                   Spacer(),
                 ],
-                IconButton(
-                  visualDensity: visualDensity,
-                  onPressed: documentRef == null ? null : () => _changeLayoutType(),
-                  icon: Icon(Icons.pages),
-                ),
+                _buildPageModeMenu(enabled: documentRef != null, visualDensity: visualDensity),
                 IconButton(
                   visualDensity: visualDensity,
                   icon: const Icon(Icons.circle, color: Colors.red),
@@ -308,7 +302,8 @@ class _MainPageState extends State<MainPage> with WidgetsBindingObserver, Single
                       controller: controller,
                       fontManager: _fontManager,
                       params: PdfViewerParams(
-                        layoutPages: _layoutPages[_layoutTypeIndex],
+                        layoutStrategy: _layoutStrategy,
+                        paging: _paged ? const PdfPaging() : null,
                         scrollHorizontallyByMouseWheel: isHorizontalLayout,
                         pageAnchor: isHorizontalLayout ? PdfPageAnchor.left : PdfPageAnchor.top,
                         pageAnchorEnd: isHorizontalLayout ? PdfPageAnchor.right : PdfPageAnchor.bottom,
@@ -502,7 +497,10 @@ class _MainPageState extends State<MainPage> with WidgetsBindingObserver, Single
                               child: isHorizontalLayout
                                   ? null
                                   : Center(
-                                      child: Text(pageNumber.toString(), style: const TextStyle(color: Colors.white)),
+                                      child: Text(
+                                        controller.currentPageRange?.label ?? '',
+                                        style: const TextStyle(color: Colors.white),
+                                      ),
                                     ),
                             ),
                           ),
@@ -516,7 +514,10 @@ class _MainPageState extends State<MainPage> with WidgetsBindingObserver, Single
                               child: !isHorizontalLayout
                                   ? null
                                   : Center(
-                                      child: Text(pageNumber.toString(), style: const TextStyle(color: Colors.white)),
+                                      child: Text(
+                                        controller.currentPageRange?.label ?? '',
+                                        style: const TextStyle(color: Colors.white),
+                                      ),
                                     ),
                             ),
                           ),
@@ -586,16 +587,13 @@ class _MainPageState extends State<MainPage> with WidgetsBindingObserver, Single
     }
   }
 
-  int _layoutTypeIndex = 0;
+  /// Current page mode; see [_layoutStrategy].
+  var _pageMode = _PageMode.continuous;
 
-  /// Change the layout logic; see [_layoutPages] for the logics
-  void _changeLayoutType() {
-    setState(() {
-      _layoutTypeIndex = (_layoutTypeIndex + 1) % _layoutPages.length;
-    });
-  }
+  /// Show one page (spread) at a time and turn pages; see [PdfViewerParams.paging].
+  var _paged = false;
 
-  bool get isHorizontalLayout => _layoutTypeIndex == 1;
+  bool get isHorizontalLayout => _pageMode == _PageMode.horizontal;
 
   /// Page reading order; true to L-to-R that is commonly used by books like manga or such
   var isRightToLeftReadingOrder = false;
@@ -603,62 +601,65 @@ class _MainPageState extends State<MainPage> with WidgetsBindingObserver, Single
   /// Use the first page as cover page
   var needCoverPage = true;
 
-  late final List<PdfPageLayoutFunction?> _layoutPages = [
-    // The default layout
-    null,
-    // Horizontal layout
-    (pages, params) {
-      final height = pages.fold(0.0, (prev, page) => math.max(prev, page.height)) + params.margin * 2;
-      final pageLayouts = <Rect>[];
-      double x = params.margin;
-      for (var page in pages) {
-        pageLayouts.add(
-          Rect.fromLTWH(
-            x,
-            (height - page.height) / 2, // center vertically
-            page.width,
-            page.height,
+  /// The layout strategy for the current page mode. Strategies are value types, so returning a
+  /// different one (or one with different settings) relayouts the viewer without `invalidate()`.
+  PdfPageLayoutStrategy get _layoutStrategy => switch (_pageMode) {
+    // In paged mode, each page is fitted in the view so that one page is shown at a time.
+    _PageMode.continuous => SequentialPagesLayout(fitMode: _paged ? PdfFitMode.fit : PdfFitMode.none),
+    _PageMode.horizontal => SequentialPagesLayout(
+      scrollDirection: Axis.horizontal,
+      fitMode: _paged ? PdfFitMode.fit : PdfFitMode.none,
+    ),
+    _PageMode.facing => FacingPagesLayout(
+      coverPage: needCoverPage,
+      rightToLeft: isRightToLeftReadingOrder,
+      fitMode: _paged ? PdfFitMode.fit : PdfFitMode.none,
+    ),
+  };
+
+  /// The toolbar button that opens the page mode popup.
+  Widget _buildPageModeMenu({required bool enabled, VisualDensity? visualDensity}) {
+    return MenuAnchor(
+      menuChildren: [
+        for (final mode in _PageMode.values)
+          RadioMenuButton<_PageMode>(
+            value: mode,
+            groupValue: _pageMode,
+            onChanged: (value) => setState(() => _pageMode = value!),
+            closeOnActivate: false,
+            child: Text(mode.label),
           ),
-        );
-        x += page.width + params.margin;
-      }
-      return PdfPageLayout(pageLayouts: pageLayouts, documentSize: Size(x, height));
-    },
-    // Facing pages layout
-    (pages, params) {
-      final width = pages.fold(0.0, (prev, page) => math.max(prev, page.width));
-
-      final pageLayouts = <Rect>[];
-      final offset = needCoverPage ? 1 : 0;
-      double y = params.margin;
-      for (int i = 0; i < pages.length; i++) {
-        final page = pages[i];
-        final pos = i + offset;
-        final isLeft = isRightToLeftReadingOrder ? (pos & 1) == 1 : (pos & 1) == 0;
-
-        final otherSide = (pos ^ 1) - offset;
-        final h = 0 <= otherSide && otherSide < pages.length
-            ? math.max(page.height, pages[otherSide].height)
-            : page.height;
-
-        pageLayouts.add(
-          Rect.fromLTWH(
-            isLeft ? width + params.margin - page.width : params.margin * 2 + width,
-            y + (h - page.height) / 2,
-            page.width,
-            page.height,
-          ),
-        );
-        if (pos & 1 == 1 || i + 1 == pages.length) {
-          y += h + params.margin;
-        }
-      }
-      return PdfPageLayout(
-        pageLayouts: pageLayouts,
-        documentSize: Size((params.margin + width) * 2 + params.margin, y),
-      );
-    },
-  ];
+        const Divider(),
+        CheckboxMenuButton(
+          value: needCoverPage,
+          onChanged: _pageMode == _PageMode.facing ? (value) => setState(() => needCoverPage = value!) : null,
+          closeOnActivate: false,
+          child: const Text('Cover page'),
+        ),
+        CheckboxMenuButton(
+          value: isRightToLeftReadingOrder,
+          onChanged: _pageMode == _PageMode.facing
+              ? (value) => setState(() => isRightToLeftReadingOrder = value!)
+              : null,
+          closeOnActivate: false,
+          child: const Text('Right-to-left'),
+        ),
+        const Divider(),
+        CheckboxMenuButton(
+          value: _paged,
+          onChanged: (value) => setState(() => _paged = value!),
+          closeOnActivate: false,
+          child: const Text('One page at a time'),
+        ),
+      ],
+      builder: (context, menuController, child) => IconButton(
+        visualDensity: visualDensity,
+        tooltip: 'Page mode',
+        onPressed: !enabled ? null : () => menuController.isOpen ? menuController.close() : menuController.open(),
+        icon: Icon(_pageMode.icon),
+      ),
+    );
+  }
 
   void _addCurrentSelectionToMarkers(Color color) {
     if (controller.isReady && textSelections != null) {
@@ -791,4 +792,15 @@ class _MainPageState extends State<MainPage> with WidgetsBindingObserver, Single
     final parts = path.split(RegExp(r'[\\/]'));
     return parts.isEmpty ? path : parts.last;
   }
+}
+
+/// Page modes selectable from the toolbar popup.
+enum _PageMode {
+  continuous('Continuous', Icons.view_agenda_outlined),
+  horizontal('Horizontal', Icons.view_week_outlined),
+  facing('Facing pages', Icons.menu_book_outlined);
+
+  const _PageMode(this.label, this.icon);
+  final String label;
+  final IconData icon;
 }

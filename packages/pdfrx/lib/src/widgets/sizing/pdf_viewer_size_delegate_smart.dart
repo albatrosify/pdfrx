@@ -7,6 +7,7 @@ import 'dart:math' as math;
 import 'package:flutter/rendering.dart';
 import 'package:pdfrx_engine/pdfrx_engine.dart';
 
+import '../layout/pdf_fit_mode.dart';
 import '../pdf_viewer.dart';
 import '../pdf_viewer_layout_metrics.dart';
 import '../pdf_viewer_params.dart';
@@ -175,9 +176,8 @@ class PdfViewerSizeDelegateSmart implements PdfViewerSizeDelegate {
     required double pageMargin,
     required EdgeInsets? boundaryMargin,
   }) {
-    // Reuse the legacy math for geometric limits (coverScale/alternativeFitScale)
-    // We can delegate this calculation or duplicate the math (it's purely geometric).
-    // Duplicating for clarity/independence:
+    // Geometric limits (coverScale / alternativeFitScale). Same math as the legacy delegate,
+    // duplicated here to keep the two independent.
     final bmh = boundaryMargin?.horizontal == double.infinity ? 0 : boundaryMargin?.horizontal ?? 0;
     final bmv = boundaryMargin?.vertical == double.infinity ? 0 : boundaryMargin?.vertical ?? 0;
 
@@ -188,9 +188,17 @@ class PdfViewerSizeDelegateSmart implements PdfViewerSizeDelegate {
       final s1 = viewSize.width / (layout.documentSize.width + bmh);
       final s2 = viewSize.height / (layout.documentSize.height + bmv);
       coverScale = math.max(s1, s2);
+      // `fill`/`fit` geometry is already sized to the viewport across the scroll axis, so its home
+      // zoom is the cross-axis fit. Covering the viewport would zoom in on a document that is shorter
+      // than the view along the scroll axis (a few pages, or a single one).
+      if (layout.fitMode == PdfFitMode.fill || layout.fitMode == PdfFitMode.fit) {
+        coverScale = layout.effectivePrimaryAxis == Axis.vertical ? s1 : s2;
+      }
 
       if (pageNumber != null && pageNumber >= 1 && pageNumber <= layout.pageLayouts.length) {
-        final rect = layout.pageLayouts[pageNumber - 1];
+        // Fit the whole spread (e.g. both facing pages), not one of its pages.
+        final spreadIndex = layout.spreadIndexOf(pageNumber);
+        final rect = spreadIndex >= 0 ? layout.spreadBounds[spreadIndex] : layout.pageLayouts[pageNumber - 1];
         final m2 = pageMargin * 2;
         alternativeFitScale = math.min(
           (viewSize.width) / (rect.width + bmh + m2),
@@ -199,19 +207,23 @@ class PdfViewerSizeDelegateSmart implements PdfViewerSizeDelegate {
       }
     }
 
-    // Smart Policy for Min Scale:
-    // 1. Calculate "Fit Page" scale (fallback to coverScale if page not found)
-    final fitPageScale = alternativeFitScale ?? coverScale;
-
-    // 2. Adjust for multi-page visibility
-    // If maxPagesVisible is 1.0, this is Fit Page.
-    // If maxPagesVisible is 2.0, we allow zooming out 2x further.
-    // If maxPagesVisible is infinity, this becomes 0.
-    final allowedMinScale = fitPageScale / _maxPagesVisible;
-
-    // 3. The minimum scale is whichever is larger: the hard configuration or the physical fit.
-    // This prevents zooming out further than the page size.
-    final effectiveMinScale = math.min(math.max(_minScale, allowedMinScale), _maxScale);
+    // Smart min scale, floored by the active fit mode.
+    final double effectiveMinScale;
+    switch (layout?.fitMode ?? PdfFitMode.none) {
+      case PdfFitMode.fill:
+      case PdfFitMode.cover:
+        // Floor at fit-width; don't allow a multi-page zoom-out.
+        effectiveMinScale = math.min(math.max(_minScale, coverScale), _maxScale);
+      case PdfFitMode.fit:
+      case PdfFitMode.none:
+        // Fit-page (or coverScale if the page is unknown), allowing zoom-out up to
+        // maxPagesVisible. For `fit`, never above the home zoom (coverScale): a spread narrower than
+        // the view, such as a cover page, must not force the view to zoom in.
+        var fitPageScale = alternativeFitScale ?? coverScale;
+        if (layout?.fitMode == PdfFitMode.fit) fitPageScale = math.min(fitPageScale, coverScale);
+        final allowedMinScale = fitPageScale / _maxPagesVisible;
+        effectiveMinScale = math.min(math.max(_minScale, allowedMinScale), _maxScale);
+    }
 
     return PdfViewerLayoutMetrics(
       minScale: effectiveMinScale,
@@ -284,7 +296,9 @@ class PdfViewerSizeDelegateSmart implements PdfViewerSizeDelegate {
 
     // Calculate the target zoom based on the legacy "preserve zoom" rule first.
     // This is often just currentZoom, but handles minScale clamping logic.
-    final zoomTo = currentZoom < newState.minScale || currentZoom == oldState.minScale
+    final zoomTo = shouldResetZoomForFitMode(oldState, newState)
+        ? newState.coverScale
+        : currentZoom < newState.minScale || currentZoom == oldState.minScale
         ? newState.minScale
         : currentZoom;
 

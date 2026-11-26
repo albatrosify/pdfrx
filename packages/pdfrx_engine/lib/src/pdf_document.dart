@@ -142,6 +142,9 @@ abstract class PdfDocument {
   /// may be heavy because of FFI overhead and it may be better to cache the PDF on memory if it's not too large.
   /// The default size is 1MB.
   ///
+  /// On native PDFium platforms, [read] must fill all requested `size` bytes and return that exact count.
+  /// A short, zero, or negative return for a nonempty request is an error; partial reads are not retried.
+  ///
   /// [passwordProvider] is used to provide password for encrypted PDF. See [PdfPasswordProvider] for more info.
   ///
   /// [firstAttemptByEmptyPassword] is used to determine whether the first attempt to open the PDF is by empty
@@ -226,6 +229,7 @@ abstract class PdfDocument {
   /// is cancelled.
   /// When [onPageLoadProgress] is called, it should return true to continue loading process or false to stop loading.
   /// [data] is an optional data that can be used to pass additional information to the callback.
+  /// Concurrent calls keep independent callbacks and cancellation; stopping one does not stop other consumers.
   ///
   /// [startPageNumber] is the 1-based page number to start measuring from. Pages are measured in order of their
   /// distance from [startPageNumber], alternating after and before it (start, start+1, start-1, start+2, start-2, ...),
@@ -305,6 +309,10 @@ abstract class PdfDocument {
   /// Reload specified pages.
   ///
   /// [pageNumbersToReload] is the list of page numbers (1-based) to reload. If null, all pages are reloaded.
+  /// An empty list leaves existing pages unchanged when the native page count is unchanged.
+  /// The native PDFium backend reloads all current pages if their count changed, because insertions and removals
+  /// may shift the remaining page indices. Invalid page numbers are rejected before publishing any changes.
+  /// Complete native edits before calling this method, and avoid editing the native document while it reloads.
   Future<void> reloadPages({List<int>? pageNumbersToReload});
 
   /// Associate a [PdfFontManager] to the document to handle font loading/substitution for missing fonts.

@@ -54,7 +54,7 @@ void main() {
     final evicted = <int>[];
     final first = budget.tryReserve(40)!.commit(retainedBytes: 40, onEvict: () => evicted.add(1))!;
     final second = budget.tryReserve(40)!.commit(retainedBytes: 40, onEvict: () => evicted.add(2))!;
-    first.touch();
+    first.touch(isPinned: false);
     final reservation = budget.tryReserve(50)!;
     expect(evicted, [2]);
     expect(second.isDisposed, isTrue);
@@ -62,6 +62,93 @@ void main() {
     expect(budget.estimatedBytes, 90);
     reservation.dispose();
     reservation.dispose();
+    expect(budget.pendingBytes, 0);
+  });
+
+  test('speculative reservations evict only entries their owners no longer need', () {
+    final budget = PdfImageCacheBudget(maximumBytes: 100);
+    final evicted = <int>[];
+    final unneeded = budget.tryReserve(40)!.commit(retainedBytes: 40, onEvict: () => evicted.add(1))!;
+    final needed = budget.tryReserve(40)!.commit(retainedBytes: 40, onEvict: () => evicted.add(2), isNeeded: true)!;
+    expect(budget.tryReserve(70, keepNeeded: true), isNull);
+    expect(evicted, isEmpty);
+    budget.tryReserve(50, keepNeeded: true)!.dispose();
+    expect(evicted, [1]);
+    expect(needed.isDisposed, isFalse);
+    expect(unneeded.isDisposed, isTrue);
+    needed.touch(isNeeded: false);
+    expect(budget.tryReserve(70, keepNeeded: true), isNotNull);
+    expect(evicted, [1, 2]);
+  });
+
+  test('a reservation that cannot fit evicts nothing', () {
+    final budget = PdfImageCacheBudget(maximumBytes: 100);
+    budget.tryReserve(80)!.commit(retainedBytes: 80, onEvict: () => fail('Pinned entry was evicted'), isPinned: true);
+    final cached = budget.tryReserve(10)!.commit(retainedBytes: 10, onEvict: () => fail('Useful entry was evicted'))!;
+    expect(budget.tryReserve(30), isNull);
+    expect(cached.isDisposed, isFalse);
+    expect(budget.retainedBytes, 90);
+  });
+
+  test('reservable bytes count only what a reservation may evict', () {
+    final budget = PdfImageCacheBudget(maximumBytes: 100);
+    budget.tryReserve(20)!.commit(retainedBytes: 20, onEvict: () {});
+    budget.tryReserve(30)!.commit(retainedBytes: 30, onEvict: () {}, isNeeded: true);
+    budget.tryReserve(10)!.commit(retainedBytes: 10, onEvict: () {}, isPinned: true);
+    final pending = budget.tryReserve(15)!;
+    expect(budget.reservableBytes(), 75);
+    expect(budget.reservableBytes(keepNeeded: true), 45);
+    expect(budget.tryReserve(46, keepNeeded: true), isNull);
+    expect(budget.retainedBytes, 60);
+    pending.dispose();
+  });
+
+  test('reservable bytes track changes in entry protection and removal', () {
+    final budget = PdfImageCacheBudget(maximumBytes: 100);
+    final pending = budget.tryReserve(10)!;
+    final entry = budget.tryReserve(20)!.commit(retainedBytes: 20, onEvict: () {}, isPinned: true, isNeeded: true)!;
+    expect(budget.reservableBytes(), 70);
+    expect(budget.reservableBytes(keepNeeded: true), 70);
+
+    entry.touch(isPinned: false);
+    expect(budget.reservableBytes(), 90);
+    expect(budget.reservableBytes(keepNeeded: true), 70);
+
+    entry.touch(isNeeded: false);
+    expect(budget.reservableBytes(), 90);
+    expect(budget.reservableBytes(keepNeeded: true), 90);
+
+    entry.touch(isPinned: true, isNeeded: true);
+    expect(budget.reservableBytes(), 70);
+    expect(budget.reservableBytes(keepNeeded: true), 70);
+
+    budget.clear(keepPinned: false);
+    expect(budget.reservableBytes(), 90);
+    expect(budget.reservableBytes(keepNeeded: true), 90);
+    pending.dispose();
+  });
+
+  test('entries nobody needs are evicted before needed ones, whatever their recency', () {
+    final budget = PdfImageCacheBudget(maximumBytes: 100);
+    final evicted = <int>[];
+    budget.tryReserve(40)!.commit(retainedBytes: 40, onEvict: () => evicted.add(1), isNeeded: true);
+    budget.tryReserve(40)!.commit(retainedBytes: 40, onEvict: () => evicted.add(2));
+    expect(budget.tryReserve(50), isNotNull);
+    expect(evicted, [2]);
+  });
+
+  test('speculative reservations are counted until committed or released', () {
+    final budget = PdfImageCacheBudget(maximumBytes: 100);
+    final visible = budget.tryReserve(20)!;
+    final first = budget.tryReserve(30, keepNeeded: true)!;
+    final second = budget.tryReserve(10, keepNeeded: true)!;
+    expect(budget.pendingBytes, 60);
+    expect(budget.speculativePendingBytes, 40);
+    first.commit(retainedBytes: 20, onEvict: () {});
+    second.dispose();
+    second.dispose();
+    expect(budget.speculativePendingBytes, 0);
+    visible.dispose();
     expect(budget.pendingBytes, 0);
   });
 

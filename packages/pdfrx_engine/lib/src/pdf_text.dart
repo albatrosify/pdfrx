@@ -24,7 +24,7 @@ class PdfPageRawText {
   }
 
   @override
-  int get hashCode => fullText.hashCode ^ charRects.hashCode;
+  int get hashCode => Object.hash(fullText, charRects.length);
 }
 
 /// Handles text extraction from PDF page.
@@ -75,6 +75,7 @@ class PdfPageText {
       return -1; // range error
     }
     if (index == fragments.length) {
+      if (fragments.isEmpty) return -1; // range error
       final f = fragments.last;
       if (textIndex >= f.index + f.length) {
         return -1; // range error
@@ -147,7 +148,7 @@ class PdfPageText {
   }
 
   @override
-  int get hashCode => pageNumber.hashCode ^ fullText.hashCode ^ charRects.hashCode ^ fragments.hashCode;
+  int get hashCode => Object.hash(pageNumber, fullText, charRects.length, fragments.length);
 }
 
 /// Text direction in PDF page.

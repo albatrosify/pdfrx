@@ -90,6 +90,10 @@ class InteractiveViewer extends StatefulWidget {
     this.scrollPhysics,
     this.scrollPhysicsScale,
     this.scrollPhysicsAutoAdjustBoundaries = true,
+    this.constrainPinch = false,
+    this.boundaryRectProvider,
+    this.onTrackpadScroll,
+    this.underflowAlignment = Alignment.center,
   }) : assert(minScale > 0),
        assert(interactionEndFrictionCoefficient > 0),
        assert(scaleInertiaMaxExcursion == null || (scaleInertiaMaxExcursion > 0 && scaleInertiaMaxExcursion < 1)),
@@ -145,6 +149,10 @@ class InteractiveViewer extends StatefulWidget {
     this.scrollPhysics,
     this.scrollPhysicsScale,
     this.scrollPhysicsAutoAdjustBoundaries = true,
+    this.constrainPinch = false,
+    this.boundaryRectProvider,
+    this.onTrackpadScroll,
+    this.underflowAlignment = Alignment.center,
   }) : assert(minScale > 0),
        assert(interactionEndFrictionCoefficient > 0),
        assert(scaleInertiaMaxExcursion == null || (scaleInertiaMaxExcursion > 0 && scaleInertiaMaxExcursion < 1)),
@@ -204,6 +212,15 @@ class InteractiveViewer extends StatefulWidget {
   /// Defaults to [EdgeInsets.zero], which results in boundaries that are the
   /// exact same size and position as the [child].
   final EdgeInsets boundaryMargin;
+
+  /// With [scrollPhysics], returns the boundary rect in child coordinates to use instead of
+  /// [boundaryMargin] around the child, or null to use [boundaryMargin]. Called whenever the pan
+  /// boundaries are computed, so it can change dynamically (e.g. to stop panning at a page edge).
+  final Rect? Function()? boundaryRectProvider;
+
+  /// Called for a trackpad scroll event (on the web, where trackpad scrolling arrives as
+  /// [PointerScrollEvent]s) before it is applied as a pan; return true to consume it.
+  final bool Function(PointerScrollEvent event)? onTrackpadScroll;
 
   /// Builds the child of this widget.
   ///
@@ -480,6 +497,19 @@ class InteractiveViewer extends StatefulWidget {
   /// child size is smaller than the viewport size.
   final bool scrollPhysicsAutoAdjustBoundaries;
 
+  /// Whether the view is kept inside the boundaries while pinching, instead of following the focal
+  /// point of the pinch wherever it leads and being brought back when the pinch ends.
+  ///
+  /// Only with [scrollPhysics]. The position is clamped with the same boundaries as the snap-back
+  /// at the end of the pinch, so content that fits in the view stays centered while it is zoomed
+  /// out instead of drifting towards the pinch. The scale still overscrolls [minScale]/[maxScale]
+  /// and snaps back. This suits pointer devices (a trackpad pinch); the default (false) keeps the
+  /// free pinch that touch screens expect.
+  final bool constrainPinch;
+
+  /// Alignment of content smaller than the viewport when using scroll physics.
+  final Alignment underflowAlignment;
+
   /// Returns the closest point to the given point on the given line segment.
   @visibleForTesting
   static Vector3 getNearestPointOnLine(Vector3 point, Vector3 l1, Vector3 l2) {
@@ -584,7 +614,7 @@ class InteractiveViewer extends StatefulWidget {
 
 class InteractiveViewerState extends State<InteractiveViewer> with TickerProviderStateMixin {
   // Preserve the originally provided boundaryMargin for recalculation overrides.
-  late final EdgeInsets _originalBoundaryMargin = widget.boundaryMargin;
+  late EdgeInsets _originalBoundaryMargin = widget.boundaryMargin;
   late TransformationController _transformer = widget.transformationController ?? TransformationController();
 
   final GlobalKey _childKey = GlobalKey();
@@ -654,7 +684,7 @@ class InteractiveViewerState extends State<InteractiveViewer> with TickerProvide
   // Return a new matrix representing the given matrix after applying the given
   // translation.
   Matrix4 _matrixTranslate(Matrix4 matrix, Offset translation) {
-    if (translation == Offset.zero) {
+    if (translation == Offset.zero || !translation.dx.isFinite || !translation.dy.isFinite) {
       return matrix.clone();
     }
 
@@ -689,7 +719,9 @@ class InteractiveViewerState extends State<InteractiveViewer> with TickerProvide
       // Scale translations keep the gesture focal point stable and are expressed in scene units.
       // ScrollPhysics operates on viewport pixels, so applying it here mixes coordinate systems and
       // can produce page-sized jumps near a boundary in long documents.
-      if (_gestureType == _GestureType.scale) return nextMatrix;
+      // With [InteractiveViewer.constrainPinch], the pinch is kept inside the boundaries with the
+      // clamp that the snap-back uses, so the two agree on where the content belongs.
+      if (_gestureType == _GestureType.scale) return widget.constrainPinch ? _matrixClamp(nextMatrix) : nextMatrix;
 
       final physics = widget.scrollPhysics!;
       // current translation in scene coordinates (negative because controller stores inverse)
@@ -781,6 +813,22 @@ class InteractiveViewerState extends State<InteractiveViewer> with TickerProvide
     );
   }
 
+  /// Safely converts [viewportPoint] to scene coordinates.
+  ///
+  /// If the transformation matrix is non-invertible (e.g. determinant is 0 or NaN),
+  /// this falls back to [viewportPoint] to prevent throwing "Matrix cannot be inverted" (#690).
+  Offset _toScene(Offset viewportPoint) {
+    try {
+      final det = _transformer.value.determinant();
+      if (det == 0.0 || !det.isFinite) {
+        return viewportPoint;
+      }
+      return _transformer.toScene(viewportPoint);
+    } on ArgumentError {
+      return viewportPoint;
+    }
+  }
+
   // Return a new matrix representing the given matrix after applying the given
   // scale.
   Matrix4 _matrixScale(Matrix4 matrix, double scale) {
@@ -788,7 +836,11 @@ class InteractiveViewerState extends State<InteractiveViewer> with TickerProvide
     if (scale == 1.0) {
       return matrix.clone();
     }
-    assert(scale != 0.0);
+    // Guard against non-positive or non-finite scale (e.g. pinch distance = 0)
+    // to prevent collapsing the matrix into a non-invertible state (#690).
+    if (scale <= 0.0 || !scale.isFinite) {
+      return matrix.clone();
+    }
 
     // fallback to widget.scrollPhysics if widget.scrollPhysicsScale not specified
     final scrollPhysics = widget.scrollPhysicsScale ?? widget.scrollPhysics;
@@ -796,37 +848,60 @@ class InteractiveViewerState extends State<InteractiveViewer> with TickerProvide
     if (scrollPhysics != null) {
       // Compute current and desired scales
       final currentScale = _transformer.value.getMaxScaleOnAxis();
+      if (currentScale <= 0.0 || !currentScale.isFinite) {
+        return matrix.clone();
+      }
       // scale provided is a desired change in scale between the current scale
       // and the start of the gesture
       final scaleChange = scale;
 
       // desired but not necessarily achieved if physics is applied
       final desiredScale = currentScale * scale;
+      if (desiredScale <= 0.0 || !desiredScale.isFinite) {
+        return matrix.clone();
+      }
 
       final allowedScale = _getAllowedScale(desiredScale);
-      // Early return if not allowed to zoom outside bounds
+      // The physics does not allow the whole change (e.g. ClampingScrollPhysics at minScale/maxScale,
+      // or a physics with a limited overscroll at the end of it): go as far as it allows. That can
+      // be outside minScale..maxScale, so it is not clamped to them; doing so would throw the scale
+      // back to minScale/maxScale the moment the overscroll limit is reached.
       if (allowedScale != desiredScale) {
-        return matrix.clone()..scaleByDouble(allowedScale, allowedScale, allowedScale, 1);
+        final allowedChange = allowedScale / currentScale;
+        if (allowedChange <= 0.0 || !allowedChange.isFinite) {
+          return matrix.clone();
+        }
+        return matrix.clone()..scaleByDouble(allowedChange, allowedChange, allowedChange, 1);
       }
 
       // Compute ratio of this update's scale to the previous update
-      final scaleRatio = scaleChange / _lastScale;
+      final safeLastScale = (_lastScale > 0.0 && _lastScale.isFinite) ? _lastScale : 1.0;
+      final scaleRatio = scaleChange / safeLastScale;
       // Store for next frame
       _lastScale = scaleChange;
       // Physics requires the incremental scale change since last update
       final incrementalScale = currentScale * scaleRatio;
+      if (incrementalScale <= 0.0 || !incrementalScale.isFinite) {
+        return matrix.clone();
+      }
 
       // Content-space-based scrollPhysics for scale overscroll and undershoot
       if (_gestureType == _GestureType.scale &&
           !_snapController.isAnimating &&
           ((desiredScale < widget.minScale) || (desiredScale > widget.maxScale))) {
         final contentSize = _boundaryRect.isInfinite ? _childSize() : _boundaryRect.size;
+        if (contentSize.width <= 0 || contentSize.height <= 0) {
+          return matrix.clone();
+        }
 
         // Compute current and desired absolute scale
         final contentWidth = contentSize.width * currentScale;
         final desiredContentWidth = contentSize.width * incrementalScale;
         final contentHeight = contentSize.height * currentScale;
         final desiredContentHeight = contentSize.height * incrementalScale;
+        if (contentWidth <= 0 || contentHeight <= 0) {
+          return matrix.clone();
+        }
 
         // Build horizontal and vertical metrics
         final ScrollMetrics metricsX = FixedScrollMetrics(
@@ -859,11 +934,17 @@ class InteractiveViewerState extends State<InteractiveViewer> with TickerProvide
         final newScaleX = (contentWidth + adjustedX) / contentWidth;
         final newScaleY = (contentHeight + adjustedY) / contentHeight;
         final factor = (newScaleX + newScaleY) / 2;
+        if (factor <= 0.0 || !factor.isFinite) {
+          return matrix.clone();
+        }
 
         return matrix.clone()..scaleByDouble(factor, factor, factor, 1);
       } else {
         final clampedTotalScale = clampDouble(desiredScale, widget.minScale, widget.maxScale);
         final clampedScale = clampedTotalScale / currentScale;
+        if (clampedScale <= 0.0 || !clampedScale.isFinite) {
+          return matrix.clone();
+        }
 
         // Apply the scale factor to the matrix
         return matrix.clone()..scaleByDouble(clampedScale, clampedScale, clampedScale, 1);
@@ -872,14 +953,20 @@ class InteractiveViewerState extends State<InteractiveViewer> with TickerProvide
       // Don't allow a scale that results in an overall scale beyond min/max
       // scale.
       final currentScale = _transformer.value.getMaxScaleOnAxis();
-      final double totalScale = math.max(
-        currentScale * scale,
-        // Ensure that the scale cannot make the child so big that it can't fit
-        // inside the boundaries (in either direction).
-        math.max(_viewport.width / _boundaryRect.width, _viewport.height / _boundaryRect.height),
-      );
+      if (currentScale <= 0.0 || !currentScale.isFinite) {
+        return matrix.clone();
+      }
+      final boundaryWidth = _boundaryRect.width;
+      final boundaryHeight = _boundaryRect.height;
+      final minBoundScale = (boundaryWidth > 0 && boundaryHeight > 0)
+          ? math.max(_viewport.width / boundaryWidth, _viewport.height / boundaryHeight)
+          : 0.0;
+      final double totalScale = math.max(currentScale * scale, minBoundScale);
       final clampedTotalScale = clampDouble(totalScale, widget.minScale, widget.maxScale);
       final clampedScale = clampedTotalScale / currentScale;
+      if (clampedScale <= 0.0 || !clampedScale.isFinite) {
+        return matrix.clone();
+      }
       return matrix.clone()..scaleByDouble(clampedScale, clampedScale, clampedScale, 1);
     }
   }
@@ -887,10 +974,10 @@ class InteractiveViewerState extends State<InteractiveViewer> with TickerProvide
   // Return a new matrix representing the given matrix after applying the given
   // rotation.
   Matrix4 _matrixRotate(Matrix4 matrix, double rotation, Offset focalPoint) {
-    if (rotation == 0) {
+    if (rotation == 0 || !rotation.isFinite) {
       return matrix.clone();
     }
-    final focalPointScene = _transformer.toScene(focalPoint);
+    final focalPointScene = _toScene(focalPoint);
     return matrix.clone()
       ..translateByDouble(focalPointScene.dx, focalPointScene.dy, 0, 1)
       ..rotateZ(-rotation)
@@ -939,14 +1026,16 @@ class InteractiveViewerState extends State<InteractiveViewer> with TickerProvide
       );
     } else if (event is PointerPanZoomUpdateEvent) {
       final focalPoint = event.position + event.pan;
+      if (!event.scale.isFinite || event.scale <= 0) return;
+      final safeScale = event.scale;
       _onScaleUpdate(
         ScaleUpdateDetails(
           focalPoint: focalPoint,
           localFocalPoint: box.globalToLocal(focalPoint),
           focalPointDelta: box.globalToLocal(focalPoint) - box.globalToLocal(focalPoint - event.panDelta),
-          scale: event.scale,
-          horizontalScale: event.scale,
-          verticalScale: event.scale,
+          scale: safeScale,
+          horizontalScale: safeScale,
+          verticalScale: safeScale,
           rotation: event.rotation,
           pointerCount: 2,
           sourceTimeStamp: event.timeStamp,
@@ -978,9 +1067,10 @@ class InteractiveViewerState extends State<InteractiveViewer> with TickerProvide
 
     _gestureType = null;
     _currentAxis = null;
-    _scaleStart = _transformer.value.getMaxScaleOnAxis();
+    final startScale = _transformer.value.getMaxScaleOnAxis();
+    _scaleStart = (startScale > 0.0 && startScale.isFinite) ? startScale : 1.0;
     _lastScale = 1.0; // ScrollPhysics
-    _referenceFocalPoint = _transformer.toScene(details.localFocalPoint);
+    _referenceFocalPoint = _toScene(details.localFocalPoint);
     _snapFocalPoint = details.localFocalPoint;
     _rotationStart = _currentRotation;
   }
@@ -988,9 +1078,10 @@ class InteractiveViewerState extends State<InteractiveViewer> with TickerProvide
   // Handle an update to an ongoing gesture. All of pan, scale, and rotate are
   // handled with GestureDetector's scale gesture.
   void _onScaleUpdate(ScaleUpdateDetails details) {
+    if (!details.scale.isFinite || details.scale <= 0) return;
     final scale = _transformer.value.getMaxScaleOnAxis();
     _scaleAnimationFocalPoint = details.localFocalPoint;
-    final focalPointScene = _transformer.toScene(details.localFocalPoint);
+    final focalPointScene = _toScene(details.localFocalPoint);
 
     if (_gestureType == _GestureType.pan) {
       // When a gesture first starts, it sometimes has no change in scale and
@@ -1009,41 +1100,56 @@ class InteractiveViewerState extends State<InteractiveViewer> with TickerProvide
     switch (_gestureType!) {
       case _GestureType.scale:
         assert(_scaleStart != null);
+        final safeScaleStart = (_scaleStart != null && _scaleStart! > 0.0 && _scaleStart!.isFinite)
+            ? _scaleStart!
+            : 1.0;
+        final safeCurrentScale = (scale > 0.0 && scale.isFinite) ? scale : safeScaleStart;
+        final rawScale = details.scale;
+        final safeDetailsScale = (rawScale > 0.0 && rawScale.isFinite) ? rawScale : 1.0;
+
         // details.scale gives us the amount to change the scale as of the
         // start of this gesture, so calculate the amount to scale as of the
         // previous call to _onScaleUpdate.
         // scaleGestureSensitivity raises the gesture ratio to a power; 1.0 leaves the mapping unchanged.
         final gestureScale = widget.scaleGestureSensitivity == 1.0
-            ? details.scale
-            : math.pow(details.scale, widget.scaleGestureSensitivity).toDouble();
-        final desiredScale = _scaleStart! * gestureScale;
-        final scaleChange = desiredScale / scale;
+            ? safeDetailsScale
+            : (rawScale > 0.0 && rawScale.isFinite)
+            ? math.pow(rawScale, widget.scaleGestureSensitivity).toDouble()
+            : 1.0;
+        final desiredScale = safeScaleStart * gestureScale;
+        final scaleChange = (desiredScale > 0.0 && desiredScale.isFinite && safeCurrentScale > 0.0)
+            ? desiredScale / safeCurrentScale
+            : 1.0;
         _snapFocalPoint = details.localFocalPoint;
-        _transformer.value = _matrixScale(_transformer.value, scaleChange);
+        if (scaleChange > 0.0 && scaleChange.isFinite && scaleChange != 1.0) {
+          _transformer.value = _matrixScale(_transformer.value, scaleChange);
+        }
 
         // While scaling, translate such that the user's two fingers stay on
         // the same places in the scene. That means that the focal point of
         // the scale should be on the same place in the scene before and after
         // the scale.
-        final focalPointSceneScaled = _transformer.toScene(details.localFocalPoint);
-        _transformer.value = _matrixTranslate(_transformer.value, focalPointSceneScaled - _referenceFocalPoint!);
+        final focalPointSceneScaled = _toScene(details.localFocalPoint);
+        final referenceFocalPoint = _referenceFocalPoint ?? focalPointSceneScaled;
+        _transformer.value = _matrixTranslate(_transformer.value, focalPointSceneScaled - referenceFocalPoint);
 
         // details.localFocalPoint should now be at the same location as the
         // original _referenceFocalPoint point. If it's not, that's because
         // the translate came in contact with a boundary. In that case, update
         // _referenceFocalPoint so subsequent updates happen in relation to
         // the new effective focal point.
-        final focalPointSceneCheck = _transformer.toScene(details.localFocalPoint);
-        if (_referenceFocalPoint!.round10BitFrac() != focalPointSceneCheck.round10BitFrac()) {
+        final focalPointSceneCheck = _toScene(details.localFocalPoint);
+        if (_referenceFocalPoint == null ||
+            _referenceFocalPoint!.round10BitFrac() != focalPointSceneCheck.round10BitFrac()) {
           _referenceFocalPoint = focalPointSceneCheck;
         }
 
       case _GestureType.rotate:
-        if (details.rotation == 0.0) {
+        if (details.rotation == 0.0 || !details.rotation.isFinite) {
           widget.onInteractionUpdate?.call(details);
           return;
         }
-        final desiredRotation = _rotationStart! + details.rotation;
+        final desiredRotation = (_rotationStart ?? 0.0) + details.rotation;
         _transformer.value = _matrixRotate(
           _transformer.value,
           _currentRotation - desiredRotation,
@@ -1052,7 +1158,7 @@ class InteractiveViewerState extends State<InteractiveViewer> with TickerProvide
         _currentRotation = desiredRotation;
 
       case _GestureType.pan:
-        assert(_referenceFocalPoint != null);
+        final referencePoint = _referenceFocalPoint ?? focalPointScene;
         // details may have a change in scale here when scaleEnabled is false.
         // In an effort to keep the behavior similar whether or not scaleEnabled
         // is true, these gestures are thrown away.
@@ -1060,12 +1166,12 @@ class InteractiveViewerState extends State<InteractiveViewer> with TickerProvide
           widget.onInteractionUpdate?.call(details);
           return;
         }
-        _currentAxis ??= _getPanAxis(_referenceFocalPoint!, focalPointScene);
+        _currentAxis ??= _getPanAxis(referencePoint, focalPointScene);
         // Translate so that the same point in the scene is underneath the
         // focal point before and after the movement.
-        final translationChange = focalPointScene - _referenceFocalPoint!;
+        final translationChange = focalPointScene - referencePoint;
         _transformer.value = _matrixTranslate(_transformer.value, translationChange);
-        _referenceFocalPoint = _transformer.toScene(details.localFocalPoint);
+        _referenceFocalPoint = _toScene(details.localFocalPoint);
     }
     widget.onInteractionUpdate?.call(details);
   }
@@ -1164,7 +1270,7 @@ class InteractiveViewerState extends State<InteractiveViewer> with TickerProvide
           // even if the the scale doesn't change, we may be out of bounds, and
           // want to animate the snap back to bounds
           _snapStartMatrix = _transformer.value.clone();
-          final pivotScene = _transformer.toScene(_snapFocalPoint);
+          final pivotScene = _toScene(widget.constrainPinch ? _constrainedSnapPivot(endScale) : _snapFocalPoint);
           final endMatrix = _snapStartMatrix.clone()
             ..translateByDouble(pivotScene.dx, pivotScene.dy, 0, 1)
             ..scaleByDouble(clampedScale / endScale, clampedScale / endScale, clampedScale / endScale, 1)
@@ -1241,6 +1347,7 @@ class InteractiveViewerState extends State<InteractiveViewer> with TickerProvide
     final double scaleChange;
     if (event is PointerScrollEvent) {
       if (event.kind == PointerDeviceKind.trackpad && !widget.trackpadScrollCausesScale) {
+        if (widget.onTrackpadScroll?.call(event) == true) return;
         // Trackpad scroll, so treat it as a pan.
         widget.onInteractionStart?.call(ScaleStartDetails(focalPoint: global, localFocalPoint: local));
 
@@ -1262,8 +1369,8 @@ class InteractiveViewerState extends State<InteractiveViewer> with TickerProvide
           return;
         }
 
-        final focalPointScene = _transformer.toScene(local);
-        final newFocalPointScene = _transformer.toScene(local - localDelta);
+        final focalPointScene = _toScene(local);
+        final newFocalPointScene = _toScene(local - localDelta);
 
         _transformer.value = _matrixClamp(_matrixTranslate(_transformer.value, newFocalPointScene - focalPointScene));
 
@@ -1308,18 +1415,23 @@ class InteractiveViewerState extends State<InteractiveViewer> with TickerProvide
       return;
     }
 
-    final focalPointScene = _transformer.toScene(local);
-    _transformer.value = _matrixScale(_transformer.value, scaleChange);
+    _gestureType = _GestureType.scale;
+    try {
+      final focalPointScene = _toScene(local);
+      _transformer.value = _matrixScale(_transformer.value, scaleChange);
 
-    // After scaling, translate such that the event's position is at the
-    // same scene point before and after the scale.
-    final focalPointSceneScaled = _transformer.toScene(local);
-    _transformer.value = _matrixClamp(_matrixTranslate(_transformer.value, focalPointSceneScaled - focalPointScene));
+      // After scaling, translate such that the event's position is at the
+      // same scene point before and after the scale.
+      final focalPointSceneScaled = _toScene(local);
+      _transformer.value = _matrixClamp(_matrixTranslate(_transformer.value, focalPointSceneScaled - focalPointScene));
 
-    widget.onInteractionUpdate?.call(
-      ScaleUpdateDetails(focalPoint: global, localFocalPoint: local, scale: scaleChange),
-    );
-    widget.onInteractionEnd?.call(ScaleEndDetails());
+      widget.onInteractionUpdate?.call(
+        ScaleUpdateDetails(focalPoint: global, localFocalPoint: local, scale: scaleChange),
+      );
+      widget.onInteractionEnd?.call(ScaleEndDetails());
+    } finally {
+      _gestureType = null;
+    }
   }
 
   void _handleInertiaAnimation() {
@@ -1337,7 +1449,7 @@ class InteractiveViewerState extends State<InteractiveViewer> with TickerProvide
     // Translate such that the resulting translation is _animation.value.
     final translationVector = _transformer.value.getTranslation();
     final translation = Offset(translationVector.x, translationVector.y);
-    final translationScene = _transformer.toScene(translation);
+    final translationScene = _toScene(translation);
 
     if (widget.scrollPhysics != null) {
       /// When using scrollPhysics, we apply a simulation rather than an animation to the offsets
@@ -1345,12 +1457,12 @@ class InteractiveViewerState extends State<InteractiveViewer> with TickerProvide
       final simulationOffsetX = simulationX != null ? -simulationX!.x(t) : translationVector.x;
       final simulationOffsetY = simulationY != null ? -simulationY!.x(t) : translationVector.y;
       final simulationOffset = Offset(simulationOffsetX, simulationOffsetY);
-      final simulationScene = _transformer.toScene(simulationOffset);
+      final simulationScene = _toScene(simulationOffset);
       final translationChangeScene = simulationScene - translationScene;
       _transformer.value = _matrixTranslate(_transformer.value, translationChangeScene);
     } else {
       // Translate such that the resulting translation is _animation.value.
-      final animationScene = _transformer.toScene(_animation!.value);
+      final animationScene = _toScene(_animation!.value);
       final translationChangeScene = animationScene - translationScene;
       _transformer.value = _matrixTranslate(_transformer.value, translationChangeScene);
     }
@@ -1381,6 +1493,9 @@ class InteractiveViewerState extends State<InteractiveViewer> with TickerProvide
     if (_boundaryRect.isInfinite) {
       return const Rect.fromLTRB(-double.maxFinite, -double.maxFinite, double.maxFinite, double.maxFinite);
     }
+    final overrideRect = widget.boundaryRectProvider?.call();
+    if (overrideRect != null) return _computePanBoundariesForRect(overrideRect, viewportSize, scale);
+
     // Compute the raw boundary rect using the baseMargin, then scale it
     final baseBoundaryRect = baseMargin.inflateRect(Offset.zero & _childSize());
     final effectiveWidth = baseBoundaryRect.width * scale;
@@ -1391,8 +1506,12 @@ class InteractiveViewerState extends State<InteractiveViewer> with TickerProvide
 
     // Always center when content is smaller than viewport, using a small tolerance for floating imprecision.
     const kOverflowTolerance = 0.1; // logical pixels
-    final extraBoundaryHorizontal = extraWidth < -kOverflowTolerance ? (extraWidth.abs() / 2) : 0.0;
-    final extraBoundaryVertical = extraHeight < -kOverflowTolerance ? (extraHeight.abs() / 2) : 0.0;
+    final extraBoundaryHorizontal = extraWidth < -kOverflowTolerance
+        ? (extraWidth.abs() * (widget.underflowAlignment.x + 1) / 2)
+        : 0.0;
+    final extraBoundaryVertical = extraHeight < -kOverflowTolerance
+        ? (extraHeight.abs() * (widget.underflowAlignment.y + 1) / 2)
+        : 0.0;
 
     // When content is smaller than viewport, force centering by making min==max
     final minX = -((baseMargin.left * scale + extraBoundaryHorizontal));
@@ -1403,6 +1522,24 @@ class InteractiveViewerState extends State<InteractiveViewer> with TickerProvide
     final maxY = extraHeight < -kOverflowTolerance
         ? minY // Force centering
         : -((baseMargin.bottom * scale + extraBoundaryVertical)) + extraHeight;
+    return Rect.fromLTRB(minX, minY, maxX, maxY).round10BitFrac();
+  }
+
+  /// Pan boundaries (as in [_computePanBoundaries]) for a boundary rect in child coordinates.
+  Rect _computePanBoundariesForRect(Rect rect, Size viewportSize, double scale) {
+    final extraWidth = rect.width * scale - viewportSize.width;
+    final extraHeight = rect.height * scale - viewportSize.height;
+    const kOverflowTolerance = 0.1; // logical pixels
+    final extraBoundaryHorizontal = extraWidth < -kOverflowTolerance
+        ? (extraWidth.abs() * (widget.underflowAlignment.x + 1) / 2)
+        : 0.0;
+    final extraBoundaryVertical = extraHeight < -kOverflowTolerance
+        ? (extraHeight.abs() * (widget.underflowAlignment.y + 1) / 2)
+        : 0.0;
+    final minX = rect.left * scale - extraBoundaryHorizontal;
+    final maxX = extraWidth < -kOverflowTolerance ? minX : rect.left * scale + extraWidth;
+    final minY = rect.top * scale - extraBoundaryVertical;
+    final maxY = extraHeight < -kOverflowTolerance ? minY : rect.top * scale + extraHeight;
     return Rect.fromLTRB(minX, minY, maxX, maxY).round10BitFrac();
   }
 
@@ -1485,6 +1622,43 @@ class InteractiveViewerState extends State<InteractiveViewer> with TickerProvide
     return matrix.clone()..setTranslation(Vector3(clampedX, clampedY, 0.0));
   }
 
+  /// The point of the view that the snap-back of a constrained pinch scales about (see
+  /// [InteractiveViewer.constrainPinch]).
+  ///
+  /// The view was clamped during the pinch, not tracking the focal point, so scaling about the focal
+  /// point would add a scroll that the boundaries allow: content pinned to an edge would drift off
+  /// it. Each axis is anchored on its own instead:
+  /// * the content fits in the view on that axis (it is centered): the view center, as there is no
+  ///   edge to pin to;
+  /// * the view is at the start or end boundary: that edge of the view, so that it stays there;
+  /// * the view is in between: the focal point.
+  Offset _constrainedSnapPivot(double scale) {
+    final boundaries = _computePanBoundaries(
+      viewportSize: _viewport.size,
+      scale: scale,
+      boundaryMargin: widget.boundaryMargin,
+    );
+    final translation = _getMatrixTranslation(_snapStartMatrix);
+    final minX = math.min(-boundaries.left, -boundaries.right);
+    final maxX = math.max(-boundaries.left, -boundaries.right);
+    final minY = math.min(-boundaries.top, -boundaries.bottom);
+    final maxY = math.max(-boundaries.top, -boundaries.bottom);
+
+    // [low]/[high] are the smallest and largest translations allowed on the axis; the largest
+    // translation shows the start (left/top) of the content, the smallest its end.
+    double pivot(double low, double high, double value, double center, double start, double end, double focal) {
+      if ((high - low).abs() < 1.0) return center;
+      if ((value - high).abs() < 1.0) return start;
+      if ((value - low).abs() < 1.0) return end;
+      return focal;
+    }
+
+    return Offset(
+      pivot(minX, maxX, translation.dx, _viewport.center.dx, _viewport.left, _viewport.right, _snapFocalPoint.dx),
+      pivot(minY, maxY, translation.dy, _viewport.center.dy, _viewport.top, _viewport.bottom, _snapFocalPoint.dy),
+    );
+  }
+
   /// Animate snap-back by interpolating scale and translation in scene-space.
   void _animateSnap() {
     if (_snapTargetMatrix == null) {
@@ -1498,18 +1672,30 @@ class InteractiveViewerState extends State<InteractiveViewer> with TickerProvide
   /// Determines whether [proposedScale] can be applied without clamping,
   /// by probing the widget.scrollPhysics.
   double _getAllowedScale(double proposedScale) {
+    if (proposedScale <= 0.0 || !proposedScale.isFinite) {
+      return widget.minScale;
+    }
     final scrollPhysics = widget.scrollPhysicsScale ?? widget.scrollPhysics;
     if (scrollPhysics == null) {
       return proposedScale.clamp(widget.minScale, widget.maxScale);
     }
 
     final contentSize = _boundaryRect.isInfinite ? _childSize() : _boundaryRect.size;
+    if (contentSize.width <= 0 || contentSize.height <= 0) {
+      return proposedScale.clamp(widget.minScale, widget.maxScale);
+    }
 
     final currentScale = _transformer.value.getMaxScaleOnAxis();
+    if (currentScale <= 0.0 || !currentScale.isFinite) {
+      return proposedScale.clamp(widget.minScale, widget.maxScale);
+    }
     final contentWidth = contentSize.width * currentScale;
     final desiredContentWidth = contentSize.width * proposedScale;
     final contentHeight = contentSize.height * currentScale;
     final desiredContentHeight = contentSize.height * proposedScale;
+    if (contentWidth <= 0 || contentHeight <= 0) {
+      return proposedScale.clamp(widget.minScale, widget.maxScale);
+    }
 
     final ScrollMetrics metricsX = FixedScrollMetrics(
       pixels: contentWidth,
@@ -1538,11 +1724,13 @@ class InteractiveViewerState extends State<InteractiveViewer> with TickerProvide
       final allowedContentWidth = desiredContentWidth - adjustmentX;
       final allowedContentHeight = desiredContentHeight - adjustmentY;
 
-      if (proposedScale > widget.maxScale) {
-        return math.max(allowedContentWidth / contentWidth, allowedContentHeight / contentHeight);
-      } else {
-        return math.max(allowedContentWidth / contentWidth, allowedContentHeight / contentHeight);
+      final allowedScaleX = allowedContentWidth / contentSize.width;
+      final allowedScaleY = allowedContentHeight / contentSize.height;
+      final allowedScale = math.max(allowedScaleX, allowedScaleY);
+      if (allowedScale <= 0.0 || !allowedScale.isFinite) {
+        return widget.minScale;
       }
+      return allowedScale;
     }
   }
 
@@ -1616,14 +1804,14 @@ class InteractiveViewerState extends State<InteractiveViewer> with TickerProvide
     }
     final desiredScale = _scaleAnimation!.value;
     final scaleChange = desiredScale / _transformer.value.getMaxScaleOnAxis();
-    final referenceFocalPoint = _transformer.toScene(_scaleAnimationFocalPoint);
+    final referenceFocalPoint = _toScene(_scaleAnimationFocalPoint);
     _transformer.value = _matrixScale(_transformer.value, scaleChange);
 
     // While scaling, translate such that the user's two fingers stay on
     // the same places in the scene. That means that the focal point of
     // the scale should be on the same place in the scene before and after
     // the scale.
-    final focalPointSceneScaled = _transformer.toScene(_scaleAnimationFocalPoint);
+    final focalPointSceneScaled = _toScene(_scaleAnimationFocalPoint);
     _transformer.value = _matrixTranslate(_transformer.value, focalPointSceneScaled - referenceFocalPoint);
   }
 
@@ -1646,6 +1834,10 @@ class InteractiveViewerState extends State<InteractiveViewer> with TickerProvide
   @override
   void didUpdateWidget(InteractiveViewer oldWidget) {
     super.didUpdateWidget(oldWidget);
+
+    if (widget.boundaryMargin != oldWidget.boundaryMargin) {
+      _originalBoundaryMargin = widget.boundaryMargin;
+    }
 
     final newController = widget.transformationController;
     if (newController == oldWidget.transformationController) {

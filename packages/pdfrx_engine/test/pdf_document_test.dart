@@ -6,11 +6,15 @@ import 'package:http/http.dart' as http;
 import 'package:http/testing.dart';
 import 'package:pdfrx_engine/pdfrx_engine.dart';
 import 'package:pdfrx_engine/src/native/pdfrx_pdfium.dart' show isPdfiumInitialized;
+import 'package:pdfrx_engine/src/native/pdf_file_cache.dart';
 import 'package:test/test.dart';
 
 import 'utils.dart';
 import 'hebrew_native.dart';
 import 'progressive_text_native.dart';
+import 'progressive_loading_native.dart';
+import 'reload_pages_native.dart';
+import 'native_open_cleanup.dart';
 
 final testPdfFile = File('../pdfrx/example/viewer/assets/hello.pdf');
 final multiPageTestPdfFile = File('../pdfrx/test/assets/multipage40.pdf');
@@ -103,6 +107,9 @@ void main() {
 
   registerHebrewNativeTests();
   registerProgressiveTextNativeTests();
+  registerProgressiveLoadingNativeTests();
+  registerReloadPagesNativeTests();
+  registerNativeOpenCleanupTests();
   setUp(() => pdfrxInitialize(tmpPath: tmpRoot.path));
 
   test('PdfDocument.openFile', () async => await testDocument(await PdfDocument.openFile(testPdfFile.path)));
@@ -123,6 +130,34 @@ void main() {
   test('PdfDocument.openData accepts a custom memory-cache threshold', () async {
     final data = await testPdfFile.readAsBytes();
     await testDocument(await PdfDocument.openData(data, maxSizeToCacheOnMemory: 0));
+  });
+
+  group('openCustom (on-demand) treats a failed or short read as an error', () {
+    // Each read fills the whole buffer, so the document opens only if the reported failure is ignored.
+    Future<PdfDocument> openReporting(int Function(int size) result) async {
+      final data = await testPdfFile.readAsBytes();
+      return PdfDocument.openCustom(
+        read: (buffer, position, size) {
+          buffer.setRange(0, size, data, position);
+          return result(size);
+        },
+        fileSize: data.length,
+        sourceName: 'custom-read-failure',
+        maxSizeToCacheOnMemory: 0,
+      );
+    }
+
+    test('read throws', () async {
+      await expectLater(openReporting((size) => throw StateError('read failed')), throwsA(isA<PdfException>()));
+    });
+
+    test('read returns -1', () async {
+      await expectLater(openReporting((size) => -1), throwsA(isA<PdfException>()));
+    });
+
+    test('read returns fewer bytes than requested', () async {
+      await expectLater(openReporting((size) => size - 1), throwsA(isA<PdfException>()));
+    });
   });
 
   group('open failures report the PDFium error code', () {
@@ -429,6 +464,34 @@ void main() {
 
     expect(document.pages.every((page) => page.isLoaded), isTrue);
     expect(document.pages[2], same(prefetchedPage));
+  });
+  test('progressive loading preserves an in-flight page replacement and older snapshots', () async {
+    final document = await PdfDocument.openFile(multiPageTestPdfFile.path, useProgressiveLoading: true);
+    addTearDown(document.dispose);
+    final originalPages = document.pages;
+    late final Future<void> loading;
+    late final PdfPage replacement;
+
+    await PdfrxEntryFunctions.instance.suspendPdfiumWorkerDuringAction(() {
+      loading = document.loadPagesProgressively(
+        startPageNumber: 20,
+        loadUnitDuration: Duration.zero,
+        onPageLoadProgress: (_, _, _) => false,
+      );
+      document.pages = [...originalPages.take(19), originalPages.first, ...originalPages.skip(20)];
+      replacement = document.pages[19];
+    });
+    await loading;
+    final pagesAfterReplacement = document.pages;
+    final stillUnloaded = pagesAfterReplacement.firstWhere((page) => !page.isLoaded);
+    await document.loadPagesProgressively(startPageNumber: 20);
+
+    expect(replacement.isLoaded, isTrue);
+    expect(document.pages[19], same(replacement));
+    expect(document.pages.every((page) => page.isLoaded), isTrue);
+    expect(originalPages[19].isLoaded, isFalse);
+    expect(pagesAfterReplacement[stillUnloaded.pageNumber - 1].isLoaded, isFalse);
+    expect(() => document.pages[19] = originalPages[19], throwsUnsupportedError);
   });
   test('progressive loading resynchronizes after callback changes pages', () async {
     final document = await PdfDocument.openFile(testPdfFile.path, useProgressiveLoading: true);
@@ -864,6 +927,75 @@ void main() {
     Pdfrx.createHttpClient = () =>
         MockClient((request) async => http.Response.bytes(await testPdfFile.readAsBytes(), 200));
     await testDocument(await PdfDocument.openUri(Uri.parse('https://example.com/hello.pdf')));
+  });
+
+  test('unknown-length full download preserves PDF when the cache bitmap grows', () async {
+    final dir = await Directory.systemTemp.createTemp('pdfrx-cache-test-');
+    final oldClient = Pdfrx.createHttpClient;
+    addTearDown(() async {
+      Pdfrx.createHttpClient = oldClient;
+      await dir.delete(recursive: true);
+    });
+    final bytes = await testPdfFile.readAsBytes();
+    final cache = PdfFileCache(File('${dir.path}/cache.pdf'));
+    Pdfrx.createHttpClient = () => MockClient.streaming((request, body) async {
+      expect(request.headers['range'], 'bytes=0-63');
+      return http.StreamedResponse(Stream.value(bytes), 200);
+    });
+    final document = await pdfDocumentFromUri(
+      Uri.parse('https://example.com/chunked.pdf'),
+      cache: cache,
+      blockSize: 64,
+    );
+    addTearDown(document.dispose);
+    expect(document.pages, isNotEmpty);
+    final cached = Uint8List(bytes.length);
+    await cache.read(cached, 0, 0, cached.length);
+    expect(cached, bytes);
+    await cache.close();
+  });
+
+  test('growing a cache bitmap preserves data across multiple copy chunks', () async {
+    final dir = await Directory.systemTemp.createTemp('pdfrx-cache-resize-');
+    final cache = PdfFileCache(File('${dir.path}/cache.pdf'));
+    addTearDown(() async {
+      await cache.close();
+      await dir.delete(recursive: true);
+    });
+    cache.setBlockSize(65536);
+    await cache.initializeWithFileSize(0, truncateExistingContent: true);
+    final bytes = Uint8List.fromList(List.generate(2 * 1024 * 1024 + 123, (i) => (i * 37) % 251));
+    await cache.write(0, bytes);
+    await cache.initializeWithFileSize(bytes.length, truncateExistingContent: false);
+    final actual = Uint8List(bytes.length);
+    await cache.read(actual, 0, 0, actual.length);
+    expect(actual, bytes);
+    await cache.setCached(0, lastBlock: cache.totalBlocks - 1);
+    await cache.close();
+    final reopened = await PdfFileCache.fromFile(cache.file);
+    addTearDown(reopened.close);
+    expect(reopened.isFullyCached, isTrue);
+    final restored = Uint8List(bytes.length);
+    await reopened.read(restored, 0, 0, restored.length);
+    expect(restored, bytes);
+  });
+
+  test('a full download releases its cache file after document disposal', () async {
+    final dir = await Directory.systemTemp.createTemp('pdfrx-cache-close-');
+    final oldClient = Pdfrx.createHttpClient;
+    final cache = PdfFileCache(File('${dir.path}/cache.pdf'));
+    addTearDown(() async {
+      Pdfrx.createHttpClient = oldClient;
+      await cache.close();
+      if (await dir.exists()) await dir.delete(recursive: true);
+    });
+    final bytes = await testPdfFile.readAsBytes();
+    Pdfrx.createHttpClient = () => MockClient.streaming((request, body) async {
+      return http.StreamedResponse(Stream.value(bytes), 200);
+    });
+    final document = await pdfDocumentFromUri(Uri.parse('https://example.com/close.pdf'), cache: cache, blockSize: 64);
+    await document.dispose();
+    await dir.delete(recursive: true);
   });
 
   group('PdfDocument.openCustom with maxSizeToCacheOnMemory=0', () {

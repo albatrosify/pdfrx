@@ -1,6 +1,6 @@
 # pdfrx
 
-Upgrading to 2.10.0: existing viewer usage and render calls remain compatible. Custom `PdfPage.render` implementations must accept the new optional `PdfPageRenderPriority? priority` parameter. See the [engine migration notes](https://github.com/espresso3389/pdfrx/tree/master/packages/pdfrx_engine#rendering-priority-and-migration-to-080). With pdfrx 2.11.0, CoreGraphics users should use `pdfrx_coregraphics` 0.5.1 or later.
+Upgrading from 2.x: see [Migrating to pdfrx 3.0](https://github.com/espresso3389/pdfrx/blob/master/doc/Migrating-to-pdfrx-3.0.md).
 
 [![Build Test](https://github.com/espresso3389/pdfrx/actions/workflows/build-test.yml/badge.svg)](https://github.com/espresso3389/pdfrx/actions/workflows/build-test.yml)
 
@@ -57,7 +57,7 @@ Anyway, please follow the instructions below to install on your environment.
 
 ## Requirements
 
-Flutter 3.47 / Dart 3.13 or later, with iOS 15+ and macOS 12+ for Apple targets. Native builds require a C toolchain to compile a small bundled library that prevents simultaneous PDFium access from multiple Flutter engines; see [native build requirements](https://github.com/espresso3389/pdfrx/blob/master/doc/pdfrx-Initialization.md#native-build-requirements).
+Flutter 3.50 / Dart 3.14 or later, with iOS 15+ and macOS 12+ for Apple targets. Native builds require a C toolchain to compile a small bundled library that prevents simultaneous PDFium access from multiple Flutter engines; see [native build requirements](https://github.com/espresso3389/pdfrx/blob/master/doc/pdfrx-Initialization.md#native-build-requirements).
 
 ## Getting Started
 
@@ -67,7 +67,7 @@ Add this to your package's `pubspec.yaml` file and execute `flutter pub get`:
 
 ```yaml
 dependencies:
-  pdfrx: ^2.11.0
+  pdfrx: ^3.1.0
 ```
 
 **Note:** You only need to add `pdfrx` to your dependencies. The `pdfrx_engine` package is automatically included as a dependency of `pdfrx`.
@@ -80,9 +80,9 @@ If you access the document API directly (for example, opening a [PdfDocument](ht
 import 'package:flutter/widgets.dart';
 import 'package:pdfrx/pdfrx.dart';
 
-Future<void> main() {
+Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
-  pdfrxFlutterInitialize(); // Required when using engine APIs before widgets
+  await pdfrxFlutterInitialize(); // Required when using engine APIs before widgets
   runApp(const MyApp());
 }
 ```
@@ -109,9 +109,9 @@ The build process uses _symbolic links_ which requires Developer Mode to be enab
 
 Please follow Microsoft's official guide to enable Developer Mode as the exact steps may vary depending on your Windows version.
 
-### Breaking change: Material UI migration
+### Material UI
 
-Since pdfrx 2.5.0, its Material widgets use [material_ui](https://pub.dev/packages/material_ui) package.
+pdfrx's Material widgets use the [material_ui](https://pub.dev/packages/material_ui) package.
 To preserve localized PDF menu labels and theming, provide `material_ui` localizations
 and a `material_ui.Theme`; Flutter Material's equivalents are separate types.
 Without `material_ui` localizations, the default PDF menu labels fall back to English.
@@ -153,7 +153,7 @@ See [pdfrx Documentation](https://github.com/espresso3389/pdfrx/blob/master/doc/
 
 [PdfPageView](https://pub.dev/documentation/pdfrx/latest/pdfrx/PdfPageView-class.html) is just another PDF widget that shows only one page. It accepts [PdfDocument](https://pub.dev/documentation/pdfrx/latest/pdfrx/PdfDocument-class.html) and page number to show a page within the document.
 
-[PdfDocumentViewBuilder](https://pub.dev/documentation/pdfrx/latest/pdfrx/PdfDocumentViewBuilder-class.html) is used to safely manage [PdfDocument](https://pub.dev/documentation/pdfrx/latest/pdfrx/PdfDocument-class.html) inside widget tree and it accepts `builder` parameter that creates child widgets.
+[PdfDocumentViewBuilder](https://pub.dev/documentation/pdfrx/latest/pdfrx/PdfDocumentViewBuilder-class.html) is used to safely manage [PdfDocument](https://pub.dev/documentation/pdfrx/latest/pdfrx/PdfDocument-class.html) inside widget tree and it accepts [`builder`](https://pub.dev/documentation/pdfrx/latest/pdfrx/PdfDocumentViewBuilder/builder.html) parameter that creates child widgets.
 
 The following fragment is a typical use of these widgets:
 

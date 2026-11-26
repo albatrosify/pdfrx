@@ -64,7 +64,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Setup Java
-        uses: actions/setup-java@b843ebf9b913146b38da2eaa7aeddf76074ae1ad # v6.1.0
+        uses: actions/setup-java@77dd5b2ce225ea11469928ac317850245a74ae78 # v6.2.0
         with:
           distribution: 'temurin'
           java-version: '17'
@@ -158,16 +158,21 @@ jobs:
 
       - name: Prepare PDFium native asset for macOS Flutter tests - ${{ matrix.package_manager }}
         working-directory: packages/pdfium_dart
-        run: dart test test/pdfium_test.dart
+        run: dart test test/pdfium_test.dart test/native_assets_manifest_test.dart
 
       - name: Test pdfrx on macOS - ${{ matrix.package_manager }}
         working-directory: packages/pdfrx
-        run: flutter test test/pdfium_loading_test.dart
+        run: >-
+          flutter test
+          test/pdfium_loading_test.dart
+          test/pdf_viewer_visible_render_state_test.dart
+          test/pdf_viewer_selection_drag_test.dart
+          test/pdf_viewer_selection_memory_test.dart
 
-      - name: Test process-wide PDFium gate
+      - name: Test process-wide PDFium gate and text cache
         timeout-minutes: 5
         working-directory: packages/pdfrx_engine
-        run: dart test test/process_gate_smoke.dart
+        run: dart test test/process_gate_smoke.dart test/pdf_page_text_cache_test.dart
 
   # Linux build
   linux:
@@ -193,9 +198,53 @@ jobs:
         working-directory: packages/pdfrx/example/viewer
         run: flutter pub get
 
+      - name: Test Hebrew text normalization and font resolution
+        working-directory: packages/pdfrx_engine
+        run: >-
+          dart test
+          test/pdf_hebrew_text_normalizer_test.dart
+          test/pdf_text_formatter_test.dart
+          test/pdf_text_search_result_test.dart
+          test/pdf_font_resolver_test.dart
+
+      - name: Test link metadata cache
+        working-directory: packages/pdfrx_engine
+        run: dart test test/pdf_page_link_cache_test.dart
+
+      - name: Test viewer link loading
+        working-directory: packages/pdfrx
+        run: flutter test test/page_link_loader_test.dart test/pdf_viewer_link_loading_test.dart
+
+      - name: Test HTTP cache freshness and storage
+        timeout-minutes: 5
+        working-directory: packages/pdfrx_engine
+        run: >-
+          dart test
+          test/http_cache_control_test.dart
+          test/pdf_file_cache_policy_test.dart
+          test/pdf_file_cache_policy_native_test.dart
+          test/pdf_file_cache_range_test.dart
+          test/pdf_file_cache_auth_identity_test.dart
+
       - name: Build Linux
         working-directory: packages/pdfrx/example/viewer
         run: flutter build linux --debug --verbose
+
+      - name: Test page loading and text caching
+        timeout-minutes: 5
+        working-directory: packages/pdfrx_engine
+        run: dart test test/pdf_document_test.dart test/pdf_page_text_cache_test.dart
+
+      - name: Test document builder identity and progress updates
+        working-directory: packages/pdfrx
+        run: >-
+          flutter test
+          test/pdf_document_view_builder_progress_test.dart
+          test/pdf_document_view_builder_identity_test.dart
+
+      - name: Test partial-only viewer cache
+        working-directory: packages/pdfrx
+        run: flutter test test/pdf_viewer_partial_cache_test.dart
 
       - name: Test process-wide PDFium gate
         timeout-minutes: 5
@@ -302,9 +351,9 @@ jobs:
         working-directory: packages/pdfrx/example/viewer
         run: flutter pub get
 
-      - name: Test PDFium worker metadata
+      - name: Test PDFium worker metadata and range responses
         working-directory: packages/pdfrx
-        run: node --test test/pdfium_worker_metadata_test.cjs
+        run: node --test test/pdfium_worker_metadata_test.cjs test/pdfium_worker_range_response_test.cjs
 
       - name: Build Web
         working-directory: packages/pdfrx/example/viewer

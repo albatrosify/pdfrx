@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:math';
 
 import 'package:flutter/foundation.dart';
 
@@ -12,7 +13,10 @@ class PdfImageCacheBudget extends ChangeNotifier {
 
   int _maximumBytes;
   int _retainedBytes = 0;
+  int _pinnedBytes = 0;
+  int _neededUnpinnedBytes = 0;
   int _pendingBytes = 0;
+  int _speculativePendingBytes = 0;
   int _peakEstimatedBytes = 0;
   final _entries = <PdfImageCacheEntry>{};
   bool _notificationScheduled = false;
@@ -33,6 +37,9 @@ class PdfImageCacheBudget extends ChangeNotifier {
   /// Estimated bytes reserved for active renders and image conversions.
   int get pendingBytes => _pendingBytes;
 
+  /// Part of [pendingBytes] reserved with `keepNeeded`, i.e. for speculative work such as prefetch.
+  int get speculativePendingBytes => _speculativePendingBytes;
+
   /// Combined current estimate.
   int get estimatedBytes => _retainedBytes + _pendingBytes;
 
@@ -41,16 +48,18 @@ class PdfImageCacheBudget extends ChangeNotifier {
 
   /// Evicts unpinned images before reserving [bytes], or returns null if they cannot fit.
   /// [allowOverBudget] is only for visible work that cannot wait for pinned images.
-  PdfImageReservation? tryReserve(int bytes, {bool allowOverBudget = false}) {
+  /// [keepNeeded] is for speculative work, which must not evict images their owners still need.
+  PdfImageReservation? tryReserve(int bytes, {bool allowOverBudget = false, bool keepNeeded = false}) {
     if (_disposed) return null;
     if (bytes < 0) throw ArgumentError.value(bytes, 'bytes');
-    if (!allowOverBudget && bytes > maximumBytes) return null;
-    _evictToFit(bytes);
+    if (!allowOverBudget && bytes > reservableBytes(keepNeeded: keepNeeded)) return null;
+    _evictToFit(bytes, keepNeeded: keepNeeded);
     if (_disposed) return null;
     if (!allowOverBudget && estimatedBytes + bytes > maximumBytes) return null;
     _pendingBytes += bytes;
+    if (keepNeeded) _speculativePendingBytes += bytes;
     _recordPeak();
-    return PdfImageReservation._(this, bytes);
+    return PdfImageReservation._(this, bytes, keepNeeded);
   }
 
   /// Evicts least-recently-used unpinned entries until the current estimate fits.
@@ -62,9 +71,33 @@ class PdfImageCacheBudget extends ChangeNotifier {
     _evict(_entries.where((entry) => !keepPinned || !entry._isPinned).toList());
   }
 
-  void _evictToFit(int extraBytes) {
+  /// The largest reservation [tryReserve] could make room for by evicting what it may evict.
+  /// A reservation larger than this fails without evicting anything.
+  int reservableBytes({bool keepNeeded = false}) {
+    final evictableBytes = _retainedBytes - _pinnedBytes - (keepNeeded ? _neededUnpinnedBytes : 0);
+    return max(0, maximumBytes - estimatedBytes + evictableBytes);
+  }
+
+  void _adjustProtectedBytes(PdfImageCacheEntry entry, int delta) {
+    if (entry._isPinned) {
+      _pinnedBytes += delta;
+    } else if (entry._isNeeded) {
+      _neededUnpinnedBytes += delta;
+    }
+  }
+
+  void _evictToFit(int extraBytes, {bool keepNeeded = false}) {
+    if (estimatedBytes + extraBytes <= maximumBytes) return;
     final evicted = <PdfImageCacheEntry>[];
-    for (final entry in _entries.toList()) {
+    // Entries nobody needs go first, so visible work takes a needed neighbor only as a last resort.
+    final candidates = [
+      for (final entry in _entries)
+        if (!entry._isNeeded) entry,
+      if (!keepNeeded)
+        for (final entry in _entries)
+          if (entry._isNeeded) entry,
+    ];
+    for (final entry in candidates) {
       if (estimatedBytes + extraBytes <= maximumBytes) break;
       if (entry._isPinned) continue;
       entry.dispose();
@@ -117,24 +150,31 @@ class PdfImageCacheBudget extends ChangeNotifier {
 
 /// A render/conversion allocation, charged until [commit] or [dispose].
 class PdfImageReservation {
-  PdfImageReservation._(this._budget, this.bytes);
+  PdfImageReservation._(this._budget, this.bytes, this._isSpeculative);
 
   PdfImageCacheBudget? _budget;
+  final bool _isSpeculative;
 
   /// Estimated active allocation size.
   final int bytes;
 
   /// Atomically replaces the reservation with a retained entry, or rejects an unpinned overflow.
   /// On rejection the caller releases its image; [onEvict] only applies to accepted entries.
-  PdfImageCacheEntry? commit({required int retainedBytes, required void Function() onEvict, bool isPinned = false}) {
+  PdfImageCacheEntry? commit({
+    required int retainedBytes,
+    required void Function() onEvict,
+    bool isPinned = false,
+    bool isNeeded = false,
+  }) {
     if (retainedBytes < 0 || retainedBytes > bytes) throw ArgumentError.value(retainedBytes, 'retainedBytes');
     final budget = _budget;
     if (budget == null) throw StateError('Image reservation has already been released');
     dispose();
     if (!isPinned && budget.estimatedBytes + retainedBytes > budget.maximumBytes) return null;
-    final entry = PdfImageCacheEntry._(budget, retainedBytes, onEvict, isPinned);
+    final entry = PdfImageCacheEntry._(budget, retainedBytes, onEvict, isPinned, isNeeded);
     budget._entries.add(entry);
     budget._retainedBytes += retainedBytes;
+    budget._adjustProtectedBytes(entry, retainedBytes);
     budget._recordPeak();
     return entry;
   }
@@ -145,17 +185,19 @@ class PdfImageReservation {
     if (budget == null) return;
     _budget = null;
     budget._pendingBytes -= bytes;
+    if (_isSpeculative) budget._speculativePendingBytes -= bytes;
     budget._scheduleChanged();
   }
 }
 
 /// A cached image's budget ownership. Releasing it does not dispose the image itself.
 class PdfImageCacheEntry {
-  PdfImageCacheEntry._(this._budget, this.bytes, this._onEvict, this._isPinned);
+  PdfImageCacheEntry._(this._budget, this.bytes, this._onEvict, this._isPinned, this._isNeeded);
 
   PdfImageCacheBudget? _budget;
   final void Function() _onEvict;
   bool _isPinned;
+  bool _isNeeded;
 
   /// Estimated resident image bytes supplied by the owner.
   final int bytes;
@@ -164,10 +206,18 @@ class PdfImageCacheEntry {
   bool get isDisposed => _budget == null;
 
   /// Updates recency and optionally whether the image is currently visible.
-  void touch({bool? isPinned}) {
+  /// A needed image, such as a prefetched neighbor, would be requested again if evicted.
+  void touch({bool? isPinned, bool? isNeeded}) {
     final budget = _budget;
     if (budget == null) return;
-    if (isPinned != null) _isPinned = isPinned;
+    final pinned = isPinned ?? _isPinned;
+    final needed = isNeeded ?? _isNeeded;
+    if (pinned != _isPinned || needed != _isNeeded) {
+      budget._adjustProtectedBytes(this, -bytes);
+      _isPinned = pinned;
+      _isNeeded = needed;
+      budget._adjustProtectedBytes(this, bytes);
+    }
     budget._entries
       ..remove(this)
       ..add(this);
@@ -181,6 +231,7 @@ class PdfImageCacheEntry {
     _budget = null;
     budget._entries.remove(this);
     budget._retainedBytes -= bytes;
+    budget._adjustProtectedBytes(this, -bytes);
     budget._scheduleChanged();
   }
 }

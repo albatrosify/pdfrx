@@ -1,6 +1,6 @@
 # Dark/Night Mode Support
 
-Use [PdfViewerParams.pageImageColorFilter](https://pub.dev/documentation/pdfrx/latest/pdfrx/PdfViewerParams/pageImageColorFilter.html) to change the rendered PDF page colors while leaving link highlights, selection, and widget overlays unchanged. This option is available from pdfrx 2.7.0.
+Use [PdfViewerParams.pageImageColorFilter](https://pub.dev/documentation/pdfrx/latest/pdfrx/PdfViewerParams/pageImageColorFilter.html) to change the rendered PDF page colors while leaving link highlights, selection, and widget overlays unchanged.
 
 ```dart
 const invertColors = ColorFilter.matrix([
@@ -19,7 +19,7 @@ PdfViewer.file(
 )
 ```
 
-The filter also affects photographs and other page artwork. Choose a different color matrix if simple inversion does not suit your documents. `backgroundColor` controls the area around pages separately.
+The filter also affects photographs and other page artwork. Choose a different color matrix if simple inversion does not suit your documents. [`backgroundColor`](https://pub.dev/documentation/pdfrx/latest/pdfrx/PdfViewerParams/backgroundColor.html) controls the area around pages separately.
 
 ## Filtering the Whole Viewer
 

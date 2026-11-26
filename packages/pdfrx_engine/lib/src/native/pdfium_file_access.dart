@@ -18,26 +18,38 @@ class PdfiumFileAccess {
     void readAndSignal(int position, Pointer<Uint8> buffer, int size) async {
       try {
         final readSize = await read(buffer.asTypedList(size), position, size);
-        PdfiumFileAccessHelper.instance.setValue(fa.fileAccess, readSize);
+        // m_GetBlock returns a success flag: any non-zero value (even -1) tells PDFium the whole buffer was filled.
+        PdfiumFileAccessHelper.instance.setValue(fa.fileAccess, readSize == size ? 1 : 0);
       } catch (e) {
-        PdfiumFileAccessHelper.instance.setValue(fa.fileAccess, -1);
+        PdfiumFileAccessHelper.instance.setValue(fa.fileAccess, 0);
       }
     }
 
     fa._nativeCallable = _NativeFileReadCallable.listener(readAndSignal);
-    fa.fileAccess = await PdfiumFileAccessHelper.instance.create(fileSize, fa._nativeCallable.nativeFunction.address);
-    return fa;
+    try {
+      fa.fileAccess = await PdfiumFileAccessHelper.instance.create(fileSize, fa._nativeCallable.nativeFunction.address);
+      return fa;
+    } catch (_) {
+      fa._nativeCallable.close();
+      rethrow;
+    }
   }
 
   /// Disposes the file access structure and associated resources.
   void dispose() {
-    PdfiumFileAccessHelper.instance.destroy(fileAccess);
-    _nativeCallable.close();
+    if (_disposed) return;
+    _disposed = true;
+    try {
+      PdfiumFileAccessHelper.instance.destroy(fileAccess);
+    } finally {
+      _nativeCallable.close();
+    }
   }
 
   /// Address of `FPDF_FILEACCESS` structure.
   late final int fileAccess;
   late final _NativeFileReadCallable _nativeCallable;
+  bool _disposed = false;
 }
 
 typedef _NativeFileReadCallable = NativeCallable<Void Function(IntPtr, Pointer<Uint8>, IntPtr)>;

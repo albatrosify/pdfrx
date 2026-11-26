@@ -4,8 +4,8 @@ This repository contains multiple Dart/Flutter packages for PDF rendering, viewi
 
 ## Requirements
 
-- Dart packages require Dart 3.13 or later.
-- Flutter packages require Flutter 3.47 or later.
+- Dart packages require Dart 3.14 or later.
+- Flutter packages require Flutter 3.50 or later.
 - Apple platform integrations target iOS 15 or later and macOS 12 or later.
 - Native builds require a C toolchain to compile a small bundled library that prevents simultaneous PDFium access from multiple Flutter engines. This library is built even when that protection is disabled at runtime. See [build requirements](doc/pdfrx-Initialization.md#native-build-requirements).
 
@@ -40,8 +40,8 @@ A cross-platform PDF viewer and manipulation plugin for Flutter.
 **⚠️ EXPERIMENTAL** - CoreGraphics-backed renderer for [pdfrx](https://pub.dev/packages/pdfrx) on iOS/macOS.
 
 - Uses PDFKit/CoreGraphics instead of [PDFium](https://pdfium.googlesource.com/pdfium/) on Apple platforms
-- Drop-in replacement for teams preferring the system PDF stack
-- Maintains full compatibility with [pdfrx](https://pub.dev/packages/pdfrx) widget API
+- Alternative backend for teams preferring the system PDF stack
+- Supports pdfrx widgets, subject to the [backend limitations](packages/pdfrx_coregraphics/README.md#limitations)
 - iOS and macOS only
 
 [View repo](packages/pdfrx_coregraphics/) | [API reference](https://pub.dev/documentation/pdfrx_coregraphics/latest/)
@@ -87,7 +87,7 @@ Add [pdfrx](https://pub.dev/packages/pdfrx) to your `pubspec.yaml`:
 
 ```yaml
 dependencies:
-  pdfrx: ^2.11.0
+  pdfrx: ^3.1.0
 ```
 
 ### For Pure Dart Applications
@@ -96,7 +96,7 @@ Add [pdfrx_engine](https://pub.dev/packages/pdfrx_engine) to your `pubspec.yaml`
 
 ```yaml
 dependencies:
-  pdfrx_engine: ^0.9.0
+  pdfrx_engine: ^0.9.6
 ```
 
 ## Documentation

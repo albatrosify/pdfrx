@@ -1,3 +1,78 @@
+# 3.1.0
+
+- Add `PdfViewerController.retryFailedRenderings()` to retry failed page images and measurements. An unchanged image request now stops after three failed attempts. Returning to a page after it leaves the cache extent starts a new request. [#835](https://github.com/espresso3389/pdfrx/pull/835)
+- Copy long text selections without retaining every selected page's geometry. A later copy includes intermediate pages that have since loaded. [#834](https://github.com/espresso3389/pdfrx/pull/834)
+- Keep progressive loading and page-event subscriptions across progress updates and rebuilds with the same document key. [#833](https://github.com/espresso3389/pdfrx/pull/833), [#840](https://github.com/espresso3389/pdfrx/pull/840)
+- Limit cached page links to the viewer's cache extent and discard obsolete link requests when navigating. [#839](https://github.com/espresso3389/pdfrx/pull/839)
+- Evict partial images when previews are disabled and notify `onDocumentLoadFinished` once the initial page's partial image is available. [#842](https://github.com/espresso3389/pdfrx/pull/842)
+- Reuse a complete HTTP response when a Web server ignores a byte-range request, avoiding a second download. [#843](https://github.com/espresso3389/pdfrx/pull/843)
+
+# 3.0.3
+
+- Fit zoom now accounts for the whole facing-page spread. Short documents open at the intended zoom in `fill` and `fit` modes. [#829](https://github.com/espresso3389/pdfrx/pull/829)
+- In paged mode, pinching below minimum zoom keeps neighboring pages and their overlays hidden. Releasing the pinch returns to the starting spread, and resizing the viewer preserves the reading position when zoomed in. [#829](https://github.com/espresso3389/pdfrx/pull/829)
+- `FacingPagesLayout` now scales each page independently in `fill` and `fit` modes. Set `singlePagesFillAvailableWidth: true` to center an unpaired page and give it the full available width. [#830](https://github.com/espresso3389/pdfrx/pull/830)
+- In paged mode, a negative `boundaryMargin` now trims the margin at both ends of each spread along the scroll axis, including interior spreads. [#830](https://github.com/espresso3389/pdfrx/pull/830)
+- Pinch zoom now holds at the overscroll limit until release. On macOS, Windows, and Linux, pinching with scroll physics enabled keeps content within its pan bounds. [#831](https://github.com/espresso3389/pdfrx/pull/831)
+
+# 3.0.2
+
+- Reduced image cache bookkeeping during painting when cached images fit within the shared memory budget. [#826](https://github.com/espresso3389/pdfrx/pull/826)
+- Sped up text searches with many matches when the search wraps to earlier pages. A change in page count also preserves a newer queued search. [#827](https://github.com/espresso3389/pdfrx/pull/827)
+- Updated to `pdfrx_engine` 0.9.5 for more efficient progressive loading of large PDFs with PDFium. [#828](https://github.com/espresso3389/pdfrx/pull/828)
+
+# 3.0.1
+
+- Requires Flutter 3.50 / Dart 3.14 or later.
+- Updated dependency constraints (`synchronized`, `url_launcher`, `web`, `material_ui`), `pdfrx_engine` 0.9.4 and `pdfium_flutter` 0.4.4.
+
+# 3.0.0
+
+See [Migrating to pdfrx 3.0](https://github.com/espresso3389/pdfrx/blob/master/doc/Migrating-to-pdfrx-3.0.md) for upgrade steps.
+
+## Breaking changes
+
+- Page layout is configured with `PdfViewerParams.layoutStrategy` (`PdfPageLayoutStrategy`), a value-type strategy resolved only when the layout changes. `PdfViewerParams.layoutPages`, `PdfViewerParams.margin` and the `PdfPageLayoutFunction` typedef are removed; use `SequentialPagesLayout(margin:, spacing:)` or a custom strategy ([#593](https://github.com/espresso3389/pdfrx/issues/593), [#657](https://github.com/espresso3389/pdfrx/pull/657)).
+- Custom layouts report their margin in `PdfPageLayout.margin`, which page navigation and fit-zoom use. `PdfPageLayout` gains `margin`, `fitMode`, `primaryAxis` and spread information; classes that `implements PdfPageLayout` must add them.
+- Removed the deprecated `PdfViewerParams.maxScale`, `minScale`, `useAlternativeFitScaleAsMinScale`, `onePassRenderingScaleThreshold` and `calculateInitialZoom`; pass them to `PdfViewerSizeDelegateProviderLegacy` instead.
+- Removed the deprecated `pdfrxFlutterInitialize(dismissPdfiumWasmWarnings:)` argument and `PdfDocumentRef.sourceName` (use `key.sourceName`).
+- Changing the layout's fit mode resets the zoom to the new layout's home zoom.
+
+## New features
+
+- `SequentialPagesLayout` with `scrollDirection`, `spacing`, `margin`, `crossAxisAlignment` and `PdfFitMode` (`none`, `fill`, `fit`, `cover`), which also fits documents with mixed page sizes.
+- `FacingPagesLayout` for book-style spreads, with cover page and right-to-left options.
+- One page (spread) at a time with page turning: `PdfViewerParams.paging` (`PdfPaging`). Swipes, mouse wheel notches and web trackpad swipes turn one page; when zoomed in, panning stops at the page edge; links and `goTo*` moves land on a page ([#505](https://github.com/espresso3389/pdfrx/pull/505)).
+- `PdfViewerController.currentPageRange` / `visiblePageRange` (`PdfPageRange`); the default scroll thumb shows the current spread (e.g. `2-3`).
+- `PdfViewerController.beginUserScroll` / `endUserScroll` for custom scroll widgets, and `PdfViewerParams.onAnimationEnd`.
+
+# 2.13.1
+
+- Fixed `PdfViewerParams.isVisible` changes releasing and reloading page images twice.
+- Fixed changes to `PdfViewerParams.scrollPhysicsScale` alone not updating the viewer ([#657](https://github.com/espresso3389/pdfrx/pull/657)).
+- Clarified `PdfTextSearcher.hasMatches` (results can exist while no match is selected) and fixed search results in the example viewer.
+
+# 2.13.0
+
+- Added visible page rendering state and customizable navigation to search matches ([#815](https://github.com/espresso3389/pdfrx/pull/815), [#805](https://github.com/espresso3389/pdfrx/pull/805)).
+- Improved rendering priority and image-budget behavior for visible and nearby pages ([#798](https://github.com/espresso3389/pdfrx/pull/798), [#820](https://github.com/espresso3389/pdfrx/pull/820)).
+- Fixed search recovery and navigation with no results, and listener removal during notifications ([#803](https://github.com/espresso3389/pdfrx/pull/803), [#802](https://github.com/espresso3389/pdfrx/pull/802), [#804](https://github.com/espresso3389/pdfrx/pull/804)).
+- Fixed zoom and page navigation edge cases ([#547](https://github.com/espresso3389/pdfrx/issues/547), [#690](https://github.com/espresso3389/pdfrx/issues/690), [#819](https://github.com/espresso3389/pdfrx/pull/819)).
+- Updated to `pdfrx_engine` 0.9.3 and `pdfium_flutter` 0.4.3.
+
+# 2.12.1
+
+- Fixed a Web document disposal race during page reload ([#795](https://github.com/espresso3389/pdfrx/issues/795)).
+- Fixed stale page previews when progressive loading replaces estimated dimensions ([#817](https://github.com/espresso3389/pdfrx/issues/817)).
+- Updated PDFium packages to fix macOS framework collisions and Flutter test loading ([#814](https://github.com/espresso3389/pdfrx/issues/814), [#818](https://github.com/espresso3389/pdfrx/issues/818)).
+
+# 2.12.0
+
+- Added a starting page and custom `Pattern` support to text search. Searches wrap around the document while keeping results sorted by page ([#789](https://github.com/espresso3389/pdfrx/pull/789)).
+- Improved search indexing for documents with matches on many pages ([#793](https://github.com/espresso3389/pdfrx/pull/793)).
+- Fixed a Web error when a document is disposed while pages are loading ([#792](https://github.com/espresso3389/pdfrx/pull/792)).
+- Updated to `pdfrx_engine` 0.9.1 for fixes to text selection and URI loading ([#790](https://github.com/espresso3389/pdfrx/issues/790), [#778](https://github.com/espresso3389/pdfrx/issues/778)).
+
 # 2.11.0
 
 - Added `PdfPage.renderForDisplay` and improved Web page rendering performance ([#787](https://github.com/espresso3389/pdfrx/pull/787)).

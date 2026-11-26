@@ -66,6 +66,36 @@ void main() {
   // affect the separate pointer-signal path (`PointerScaleEvent` / Ctrl+wheel ->
   // `scaleByPointerScale`); that is covered in the isolation group below.
 
+  for (final alignment in [Alignment.topLeft, Alignment.center, Alignment.bottomRight]) {
+    testWidgets('scroll physics preserves underflow alignment $alignment', (tester) async {
+      final controller = TransformationController();
+      addTearDown(controller.dispose);
+      await tester.pumpWidget(
+        MaterialApp(
+          home: Center(
+            child: SizedBox(
+              width: 500,
+              height: 500,
+              child: pdfrx.InteractiveViewer(
+                constrained: false,
+                transformationController: controller,
+                minScale: 0.1,
+                maxScale: 4,
+                scrollPhysics: const ClampingScrollPhysics(),
+                underflowAlignment: alignment,
+                child: const SizedBox(width: 100, height: 100),
+              ),
+            ),
+          ),
+        ),
+      );
+      await tester.sendEventToBinding(const PointerScaleEvent(position: Offset(400, 300), scale: 2));
+      await tester.pump();
+      final translation = controller.value.getTranslation();
+      expect(translation.x, closeTo(300 * (alignment.x + 1) / 2, 0.01));
+      expect(translation.y, closeTo(300 * (alignment.y + 1) / 2, 0.01));
+    });
+  }
   group('scaleGestureSensitivity - touch pinch', () {
     testWidgets('applies the configured exponent to an actual touch pinch', (tester) async {
       const spread = 1.8;
@@ -149,6 +179,42 @@ void main() {
 
       expect(amplified, plain, reason: 'the pointer-signal path must ignore scaleGestureSensitivity');
       expect(plain, closeTo(_kStartScale * 1.2, 1e-9));
+    });
+
+    testWidgets('PointerScaleEvent with scrollPhysics scales and clamps to boundaryMargin', (tester) async {
+      final controller = TransformationController();
+      addTearDown(controller.dispose);
+
+      await tester.pumpWidget(
+        MaterialApp(
+          home: Center(
+            child: SizedBox(
+              width: 500,
+              height: 500,
+              child: pdfrx.InteractiveViewer(
+                transformationController: controller,
+                constrained: false,
+                minScale: 0.5,
+                maxScale: 4.0,
+                scrollPhysics: const ClampingScrollPhysics(),
+                boundaryMargin: EdgeInsets.zero,
+                child: const SizedBox(width: 500, height: 500),
+              ),
+            ),
+          ),
+        ),
+      );
+      await tester.pump();
+
+      await tester.sendEventToBinding(
+        PointerScaleEvent(timeStamp: Duration.zero, device: _nextId++, position: const Offset(250, 250), scale: 1.5),
+      );
+      await tester.pump(const Duration(milliseconds: 4));
+
+      expect(controller.value.getMaxScaleOnAxis(), closeTo(1.5, 1e-4));
+      final trans = controller.value.getTranslation();
+      expect(trans.x, lessThanOrEqualTo(0.01));
+      expect(trans.x, greaterThanOrEqualTo(-250.0 - 0.01));
     });
   });
 
@@ -249,6 +315,143 @@ void main() {
 
     testWidgets('is handled once, by a deeper handler that claims it through the resolver', (tester) async {
       expect(await sendWheel(tester, withOverlay: true), (viewer: 0, overlay: 1));
+    });
+  });
+
+  group('Matrix invertibility and zero-distance pinch protection (#690)', () {
+    testWidgets('pinch fingers together to distance 0 does not crash and keeps matrix invertible', (tester) async {
+      final controller = TransformationController();
+      addTearDown(controller.dispose);
+
+      await tester.pumpWidget(
+        MaterialApp(
+          home: Align(
+            alignment: Alignment.topLeft,
+            child: SizedBox(
+              width: 400,
+              height: 400,
+              child: pdfrx.InteractiveViewer(
+                constrained: false,
+                minScale: 0.5,
+                maxScale: 4.0,
+                transformationController: controller,
+                scrollPhysics: FixedOverscrollPhysics(),
+                child: const SizedBox(width: 400, height: 400),
+              ),
+            ),
+          ),
+        ),
+      );
+
+      final firstFinger = await tester.startGesture(const Offset(180, 200), pointer: 1);
+      final secondFinger = await tester.startGesture(const Offset(220, 200), pointer: 2);
+      await tester.pump();
+
+      // Move fingers to the exact same point (distance = 0, scale = 0)
+      await firstFinger.moveTo(const Offset(200, 200));
+      await secondFinger.moveTo(const Offset(200, 200));
+      await tester.pump();
+
+      // Separate fingers again
+      await firstFinger.moveTo(const Offset(180, 200));
+      await secondFinger.moveTo(const Offset(220, 200));
+      await tester.pump();
+
+      await firstFinger.up();
+      await secondFinger.up();
+      await tester.pumpAndSettle();
+
+      final det = controller.value.determinant();
+      expect(det.isFinite, isTrue);
+      expect(det, isNot(0.0));
+      expect(() => controller.toScene(const Offset(200, 200)), returnsNormally);
+    });
+
+    testWidgets('trackpad pan/zoom event with zero or tiny scale does not corrupt matrix', (tester) async {
+      final controller = TransformationController();
+      addTearDown(controller.dispose);
+
+      final viewerKey = GlobalKey();
+
+      await tester.pumpWidget(
+        MaterialApp(
+          home: Align(
+            alignment: Alignment.topLeft,
+            child: SizedBox(
+              width: 400,
+              height: 400,
+              child: pdfrx.InteractiveViewer(
+                key: viewerKey,
+                constrained: false,
+                minScale: 0.5,
+                maxScale: 4.0,
+                transformationController: controller,
+                child: const SizedBox(width: 400, height: 400),
+              ),
+            ),
+          ),
+        ),
+      );
+
+      const device = 101;
+      const position = Offset(200, 200);
+
+      // Start gesture
+      await tester.sendEventToBinding(
+        PointerPanZoomStartEvent(device: device, pointer: device, position: position, timeStamp: Duration.zero),
+      );
+      await tester.pump();
+
+      await tester.sendEventToBinding(
+        const PointerPanZoomUpdateEvent(device: device, pointer: device, position: position, scale: 1.5),
+      );
+      await tester.pump();
+      final beforeZero = controller.value.clone();
+      // Send update with scale 0.0
+      await tester.sendEventToBinding(
+        PointerPanZoomUpdateEvent(
+          device: device,
+          pointer: device,
+          position: position,
+          scale: 0.0,
+          pan: Offset.zero,
+          panDelta: Offset.zero,
+          rotation: 0,
+          timeStamp: const Duration(milliseconds: 16),
+        ),
+      );
+      await tester.pump();
+
+      expect(controller.value, beforeZero);
+      // Send update with very small scale
+      await tester.sendEventToBinding(
+        PointerPanZoomUpdateEvent(
+          device: device,
+          pointer: device,
+          position: position,
+          scale: 1e-6,
+          pan: Offset.zero,
+          panDelta: Offset.zero,
+          rotation: 0,
+          timeStamp: const Duration(milliseconds: 32),
+        ),
+      );
+      await tester.pump();
+
+      await tester.sendEventToBinding(
+        PointerPanZoomEndEvent(
+          device: device,
+          pointer: device,
+          position: position,
+          timeStamp: const Duration(milliseconds: 48),
+        ),
+      );
+      await tester.pumpAndSettle();
+
+      final det = controller.value.determinant();
+      expect(det.isFinite, isTrue);
+      expect(det, isNot(0.0));
+      expect(() => controller.toScene(const Offset(200, 200)), returnsNormally);
     });
   });
 }

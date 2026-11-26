@@ -1,6 +1,8 @@
 import 'dart:async';
+import 'dart:convert';
 
 import 'package:collection/collection.dart';
+import 'package:crypto/crypto.dart';
 import 'package:flutter/foundation.dart';
 import 'package:pdfrx_engine/pdfrx_engine.dart';
 import 'package:synchronized/extension.dart';
@@ -77,17 +79,10 @@ abstract class PdfDocumentRef {
   /// [PdfDocument] is cached based on the [PdfDocumentRefKey]. If you create multiple [PdfDocumentRef]s with the same
   /// key, they share the same [PdfDocumentListenable] and thus the same [PdfDocument] instance.
   ///
-  /// By default, the key is created from the source name (for example, file path or URI) of the document. But it may
-  /// be insufficient to identify the document uniquely in some cases. For example, if the document is not only
-  /// identified by the URI but also by some HTTP headers (for example, authentication/authorization headers),
-  /// you should create a custom key that includes the headers as well.
+  /// By default, the key is created from the source name (for example, file path or URI) of the document.
+  /// [PdfDocumentRefUri] also separates request headers and credential mode. Custom reference implementations
+  /// should use a key that distinguishes sources with different content or access credentials.
   final PdfDocumentRefKey key;
-
-  /// The name that identifies the source of the document.
-  ///
-  /// This is for compatibility. Use [key] instead. See [PdfDocumentRefKey] for more info.
-  @Deprecated('For compatibility. Use key for source identification')
-  String get sourceName => key.sourceName;
 
   static final _listenables = CanonicalizedMap<PdfDocumentRefKey, PdfDocumentRef, PdfDocumentListenable>(
     (ref) => ref.key,
@@ -145,6 +140,21 @@ class PdfDocumentRefAsset extends PdfDocumentRef {
   }
 }
 
+/// Builds a stable cache identity for a URL and its request authentication context.
+PdfDocumentRefKey _uriDocumentKey(Uri uri, Map<String, String>? headers, bool withCredentials) {
+  final normalizedHeaders = <String, String>{};
+  headers?.forEach((name, value) => normalizedHeaders[name.toLowerCase()] = value);
+  final names = normalizedHeaders.keys.toList()..sort();
+  final headerDigest = sha256.convert(
+    utf8.encode(
+      jsonEncode([
+        for (final name in names) [name, normalizedHeaders[name]],
+      ]),
+    ),
+  );
+  return PdfDocumentRefKey(uri.toString(), ['uri', withCredentials, headerDigest.toString()]);
+}
+
 /// A [PdfDocumentRef] that loads the document from network.
 class PdfDocumentRefUri extends PdfDocumentRef {
   PdfDocumentRefUri(
@@ -158,7 +168,7 @@ class PdfDocumentRefUri extends PdfDocumentRef {
     this.timeout,
     this.useProgressiveLoading = true,
     PdfDocumentRefKey? key,
-  }) : super(key: key ?? PdfDocumentRefKey(uri.toString()));
+  }) : super(key: key ?? _uriDocumentKey(uri, headers, withCredentials));
 
   /// The URI to load the document.
   final Uri uri;
@@ -503,8 +513,10 @@ class PdfDocumentListenable extends Listenable {
   }
 
   void notifyListeners() {
-    for (final listener in _listeners) {
-      listener();
+    // Listeners may detach themselves (or other listeners) while the document
+    // load completes. Iterate a snapshot and skip callbacks since removed.
+    for (final listener in _listeners.toList()) {
+      if (_listeners.contains(listener)) listener();
     }
   }
 
