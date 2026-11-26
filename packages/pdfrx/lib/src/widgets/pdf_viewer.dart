@@ -2157,10 +2157,20 @@ class _PdfViewerState extends State<PdfViewer>
 
   static bool _areZoomsAlmostIdentical(double z1, double z2) => (z1 - z2).abs() < 0.01;
 
+  /// CREWLINE PATCH: [PdfViewerParams.boundaryMargin] in document units at [zoom]; converts it from
+  /// view pixels when [PdfViewerParams.boundaryMarginInViewSpace] is set.
+  EdgeInsets _boundaryMarginInDocumentUnits(double zoom) {
+    final margin = widget.params.boundaryMargin ?? EdgeInsets.zero;
+    if (!widget.params.boundaryMarginInViewSpace || margin.containsInfinite || zoom <= 0) return margin;
+    return margin / zoom;
+  }
+
   // Auto-adjust boundaries when content is smaller than the view, centering
   // the content and ensuring InteractiveViewer's scrollPhysics works when specified
   void _adjustBoundaryMargins(Size viewSize, double zoom, {PdfPageAnchor? anchor}) {
-    final boundaryMargin = widget.params.boundaryMargin ?? EdgeInsets.zero;
+    // CREWLINE PATCH: every clamp (pan, zoom, goTo) goes through this method with the zoom it is
+    // about to apply, so converting a view-space margin here covers _adjustedBoundaryMargins users.
+    final boundaryMargin = _boundaryMarginInDocumentUnits(zoom);
 
     if (boundaryMargin.containsInfinite) {
       _adjustedBoundaryMargins = boundaryMargin;
@@ -3653,7 +3663,7 @@ class _PdfViewerState extends State<PdfViewer>
       return _calcMatrixFor(pageRect.center, zoom: _currentZoom, viewSize: _viewSize!);
     }
 
-    final boundaryMargin = anchor == null ? _adjustedBoundaryMargins : widget.params.boundaryMargin ?? EdgeInsets.zero;
+    final boundaryMargin = anchor == null ? _adjustedBoundaryMargins : _boundaryMarginInDocumentUnits(_currentZoom);
 
     // Preserve the old default behavior by using the adjusted underflow margin
     // unless the caller explicitly requested an anchor.

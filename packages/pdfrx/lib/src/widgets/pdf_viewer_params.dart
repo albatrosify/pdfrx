@@ -38,6 +38,7 @@ class PdfViewerParams {
     this.normalizeMatrix,
     this.panAxis = PanAxis.free,
     this.boundaryMargin,
+    this.boundaryMarginInViewSpace = false,
     this.annotationRenderingMode = PdfAnnotationRenderingMode.annotationAndForms,
     this.limitRenderingCache = true,
     this.pageAnchor = PdfPageAnchor.top,
@@ -160,6 +161,17 @@ class PdfViewerParams {
   ///
   /// The default is `EdgeInsets.zero`.
   final EdgeInsets? boundaryMargin;
+
+  /// CREWLINE PATCH: if true, [boundaryMargin] is measured in view (logical screen) pixels instead of
+  /// document units, so it stays the same size on screen at every zoom level.
+  ///
+  /// [boundaryMargin] is normally in document coordinates, so its on-screen size is `margin * zoom`.
+  /// That makes it unusable for reserving space under fixed overlays (floating app bars, bottom bars):
+  /// the reserved gap shrinks when zoomed out and grows when zoomed in. With this flag set, the
+  /// clamping that keeps the document inside its boundary divides the margin by the current zoom.
+  ///
+  /// Only applies to the viewer's own boundary handling (`scrollPhysics == null`, the default).
+  final bool boundaryMarginInViewSpace;
 
   /// Annotation rendering mode.
   final PdfAnnotationRenderingMode annotationRenderingMode;
@@ -694,6 +706,7 @@ class PdfViewerParams {
         (other.paging == null) != (paging == null) || // relayout only when paged mode switches
         other.panAxis != panAxis ||
         other.boundaryMargin != boundaryMargin ||
+        other.boundaryMarginInViewSpace != boundaryMarginInViewSpace ||
         other.annotationRenderingMode != annotationRenderingMode ||
         other.limitRenderingCache != limitRenderingCache ||
         other.pageAnchor != pageAnchor ||
@@ -737,6 +750,7 @@ class PdfViewerParams {
         other.paging == paging &&
         other.panAxis == panAxis &&
         other.boundaryMargin == boundaryMargin &&
+        other.boundaryMarginInViewSpace == boundaryMarginInViewSpace &&
         other.annotationRenderingMode == annotationRenderingMode &&
         other.limitRenderingCache == limitRenderingCache &&
         other.pageAnchor == pageAnchor &&
@@ -807,6 +821,7 @@ class PdfViewerParams {
         paging.hashCode ^
         panAxis.hashCode ^
         boundaryMargin.hashCode ^
+        boundaryMarginInViewSpace.hashCode ^
         annotationRenderingMode.hashCode ^
         limitRenderingCache.hashCode ^
         pageAnchor.hashCode ^
